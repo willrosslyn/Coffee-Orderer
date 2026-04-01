@@ -1,8 +1,7 @@
 """
-Coffee Ordering System v6 - Multi-shop RF Forecast Model
+Coffee Ordering System v7 - Multi-shop RF Forecast Model
 One row per date per shop with all bar + retail forecasts combined.
-Bar data: daily rows in sales_bar
-Retail data: weekly rows in sales_retail (expanded to daily)
+Both bar and retail data are daily rows in their respective tables.
 """
 
 import os, sys, requests
@@ -40,12 +39,10 @@ def sb_get(table, params):
 
 
 def sb_upsert(records):
-    # Delete existing forecasts for this shop
     requests.delete(
         f"{SUPABASE_URL}/rest/v1/forecasts?shop_id=eq.{SHOP_ID}",
         headers=HEADERS
     )
-    # Insert in batches
     for i in range(0, len(records), 200):
         batch = records[i:i+200]
         r = requests.post(
@@ -93,9 +90,10 @@ def fetch_retail_sales():
     })
     df = pd.DataFrame(rows)
     if df.empty:
-        return pd.DataFrame(columns=["week","rfm_1kg","rfm_200g","rfb_1kg",
+        return pd.DataFrame(columns=["date","rfm_1kg","rfm_200g","rfb_1kg",
                                       "rfb_200g","rff_1kg","rff_200g","ft_scoop"])
-    df["week"] = pd.to_datetime(df["week"])
+    df = df.rename(columns={"week": "date"})
+    df["date"] = pd.to_datetime(df["date"])
     for c in ["rfm_1kg","rfm_200g","rfb_1kg","rfb_200g","rff_1kg","rff_200g","ft_scoop"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     return df
@@ -116,31 +114,9 @@ def fetch_weather():
     return df
 
 
-def bar_to_daily(bar_df, weather_df):
-    """Bar data is already daily — merge weather and add features."""
-    daily = bar_df.copy()
-    daily = daily.merge(weather_df, on="date", how="left")
-    for c in ["temp","rainfall","cloud_cover","sunrise"]:
-        daily[c] = daily[c].ffill().fillna(weather_df[c].median())
-    daily["dow"]        = daily["date"].dt.dayofweek
-    daily["day_index"]  = range(len(daily))
-    daily["is_holiday"] = daily["date"].isin(BANK_HOLIDAYS).astype(int)
-    return daily
-
-
-def weekly_to_daily(weekly_df, value_cols, weather_df):
-    """Retail data is weekly — expand to daily rows."""
-    records = []
-    for _, row in weekly_df.iterrows():
-        week_start = row["week"]
-        for d in range(5):
-            day = week_start + timedelta(days=d)
-            rec = {"date": day}
-            for c in value_cols:
-                rec[c] = row[c] / 5.0
-            records.append(rec)
-    daily = pd.DataFrame(records)
-    daily["date"] = pd.to_datetime(daily["date"])
+def to_daily(df, weather_df):
+    """Merge daily sales data with weather and add model features."""
+    daily = df.copy()
     daily = daily.merge(weather_df, on="date", how="left")
     for c in ["temp","rainfall","cloud_cover","sunrise"]:
         daily[c] = daily[c].ffill().fillna(weather_df[c].median())
@@ -215,11 +191,11 @@ def main():
         bar_sales    = fetch_bar_sales()
         retail_sales = fetch_retail_sales()
         weather      = fetch_weather()
-        print(f"  Bar: {len(bar_sales)} days | Retail: {len(retail_sales)} weeks | Weather: {len(weather)} days", flush=True)
+        print(f"  Bar: {len(bar_sales)} days | Retail: {len(retail_sales)} days | Weather: {len(weather)} days", flush=True)
 
         # ── Bar models ────────────────────────────────────────
         print("\n-- Bar models --", flush=True)
-        bar_daily  = bar_to_daily(bar_sales, weather)
+        bar_daily  = to_daily(bar_sales, weather)
         bar_future = build_future(weather, bar_daily["day_index"].max(), bar_daily["date"].max())
 
         bar_results = {}
@@ -233,18 +209,19 @@ def main():
         if has_retail:
             print("\n-- Retail models --", flush=True)
             rs = retail_sales.copy()
-            rs["rfm_total"] = rs["rfm_1kg"] + rs["rfm_200g"]
-            rs["rfb_total"] = rs["rfb_1kg"] + rs["rfb_200g"]
-            rs["rff_total"] = rs["rff_1kg"] + rs["rff_200g"]
+            rs["rfm_total"] = rs["rfm_1kg"]  + rs["rfm_200g"]
+            rs["rfb_total"] = rs["rfb_1kg"]  + rs["rfb_200g"]
+            rs["rff_total"] = rs["rff_1kg"]  + rs["rff_200g"]
             rs["fts_total"] = rs["ft_scoop"]
 
-            total_cols = ["rfm_total","rfb_total","rff_total","fts_total"]
-            ret_daily  = weekly_to_daily(rs, total_cols, weather)
-            ret_future = build_future(weather, ret_daily["day_index"].max(), ret_daily["date"].max())
+            total_cols  = ["rfm_total","rfb_total","rff_total","fts_total"]
+            ret_daily   = to_daily(rs, weather)
+            ret_future  = build_future(weather, ret_daily["day_index"].max(), ret_daily["date"].max())
 
             for ct in total_cols:
                 retail_results[ct] = train_and_forecast(ret_daily, ret_future, ct)
 
+            # Historical size ratios (1kg vs 200g)
             def size_ratio(a, b):
                 total = retail_sales[a].sum() + retail_sales[b].sum()
                 return retail_sales[a].sum() / total if total > 0 else 0.5
