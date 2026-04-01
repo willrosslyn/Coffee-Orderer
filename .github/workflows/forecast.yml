@@ -1,0 +1,54 @@
+name: Coffee Forecast Model
+
+on:
+  repository_dispatch:
+    types: [run-forecast]
+  workflow_dispatch:
+    inputs:
+      shop_id:
+        description: 'Shop ID (e.g. shop_01)'
+        required: true
+        default: 'shop_01'
+      job_id:
+        description: 'Job ID (optional)'
+        required: false
+        default: 'manual'
+
+jobs:
+  forecast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run forecast model
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SHOP_ID:              ${{ github.event.client_payload.shop_id || inputs.shop_id }}
+          JOB_ID:               ${{ github.event.client_payload.job_id  || inputs.job_id  }}
+        run: python forecast_model.py
+
+      - name: Mark job failed on error
+        if: failure()
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          JOB_ID:               ${{ github.event.client_payload.job_id || inputs.job_id }}
+        run: |
+          curl -s -X PATCH "$SUPABASE_URL/rest/v1/forecast_jobs?id=eq.$JOB_ID" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"status":"error","message":"GitHub Actions job failed — check workflow logs"}'
