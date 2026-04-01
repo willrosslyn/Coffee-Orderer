@@ -1,11 +1,11 @@
 """
-Coffee Ordering System v5 — Multi-shop RF Forecast Model
+Coffee Ordering System v5 - Multi-shop RF Forecast Model
 8 models per shop: 4 bar (RFM/RFB/RFF/RFD) + 4 retail (RFM/RFB/RFF/FTScoop)
 Retail models train on combined 1kg+200g totals, split by historical size ratio.
 Triggered via GitHub Actions repository_dispatch with shop_id + job_id payload.
 """
 
-import os, sys, json, requests
+import os, sys, requests
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -20,7 +20,6 @@ HEADERS = {
     "apikey":        SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
     "Content-Type":  "application/json",
-    "Prefer":        "resolution=merge-duplicates",
 }
 
 BANK_HOLIDAYS = pd.to_datetime([
@@ -30,19 +29,30 @@ BANK_HOLIDAYS = pd.to_datetime([
 
 FEATURE_COLS = ["dow","temp","rainfall","sunrise","is_holiday","cloud_cover"]
 
-# ── Supabase helpers ──────────────────────────────────────────
+
 def sb_get(table, params):
     r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}",
                      headers=HEADERS, params=params)
     r.raise_for_status()
     return r.json()
 
+
 def sb_upsert(table, records):
+    # Delete existing forecasts for this shop first
+    requests.delete(
+        f"{SUPABASE_URL}/rest/v1/{table}?shop_id=eq.{SHOP_ID}",
+        headers=HEADERS
+    )
+    # Insert fresh records in batches
     for i in range(0, len(records), 200):
-        r = requests.post(f"{SUPABASE_URL}/rest/v1/{table}",
-                          headers=HEADERS, json=records[i:i+200])
+        r = requests.post(
+            f"{SUPABASE_URL}/rest/v1/{table}",
+            headers={**HEADERS, "Prefer": "return=minimal"},
+            json=records[i:i+200]
+        )
         if r.status_code not in (200, 201):
             raise Exception(f"Upsert {table} failed: {r.status_code} {r.text}")
+
 
 def update_job(status, message=""):
     requests.patch(
@@ -52,10 +62,10 @@ def update_job(status, message=""):
               "completed_at": datetime.utcnow().isoformat()}
     )
 
-# ── Fetch data ────────────────────────────────────────────────
+
 def fetch_bar_sales():
     rows = sb_get("sales_bar", {
-        "select": "week,rfm,rfb,rff,rfd",
+        "select":  "week,rfm,rfb,rff,rfd",
         "shop_id": f"eq.{SHOP_ID}",
         "order":   "week.asc",
         "limit":   "2000"
@@ -68,21 +78,24 @@ def fetch_bar_sales():
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     return df
 
+
 def fetch_retail_sales():
     rows = sb_get("sales_retail", {
-        "select": "week,rfm_1kg,rfm_200g,rfb_1kg,rfb_200g,rff_1kg,rff_200g,ft_scoop",
+        "select":  "week,rfm_1kg,rfm_200g,rfb_1kg,rfb_200g,rff_1kg,rff_200g,ft_scoop",
         "shop_id": f"eq.{SHOP_ID}",
         "order":   "week.asc",
         "limit":   "2000"
     })
     df = pd.DataFrame(rows)
     if df.empty:
-        raise Exception(f"No retail sales found for shop_id={SHOP_ID}")
+        return pd.DataFrame(columns=["week","rfm_1kg","rfm_200g","rfb_1kg",
+                                      "rfb_200g","rff_1kg","rff_200g","ft_scoop"])
     df["week"] = pd.to_datetime(df["week"])
     for c in ["rfm_1kg","rfm_200g","rfb_1kg","rfb_200g",
               "rff_1kg","rff_200g","ft_scoop"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     return df
+
 
 def fetch_weather():
     rows = sb_get("weather", {
@@ -92,18 +105,18 @@ def fetch_weather():
     })
     df = pd.DataFrame(rows)
     if df.empty:
-        raise Exception("No weather data found — please populate the weather table")
+        raise Exception("No weather data found - please populate the weather table")
     df["date"] = pd.to_datetime(df["date"])
     for c in ["temp","rainfall","cloud_cover","sunrise"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
-# ── Pro-rate weekly totals → daily rows ───────────────────────
+
 def weekly_to_daily(weekly_df, value_cols, weather_df):
     records = []
     for _, row in weekly_df.iterrows():
         week_start = row["week"]
-        for d in range(5):  # Mon–Fri
+        for d in range(5):
             day = week_start + timedelta(days=d)
             rec = {"date": day}
             for c in value_cols:
@@ -122,7 +135,7 @@ def weekly_to_daily(weekly_df, value_cols, weather_df):
     daily["is_holiday"] = daily["date"].isin(BANK_HOLIDAYS).astype(int)
     return daily
 
-# ── Build future feature rows ─────────────────────────────────
+
 def build_future(weather_df, last_index, last_date, n_days=90):
     future_dates = []
     d = last_date + timedelta(days=1)
@@ -141,7 +154,7 @@ def build_future(weather_df, last_index, last_date, n_days=90):
     future["is_holiday"] = future["date"].isin(BANK_HOLIDAYS).astype(int)
     return future
 
-# ── Single RF model ───────────────────────────────────────────
+
 def train_and_forecast(daily, future, target_col):
     training = daily[daily[target_col].notna()].copy()
     print(f"  {target_col}: {len(training)} training rows", end="")
@@ -161,17 +174,16 @@ def train_and_forecast(daily, future, target_col):
     )
     model.fit(training[FEATURE_COLS], training["residual"])
 
-    # Uplift correction — last 20 trading days
-    fitted          = training["trend"] + model.predict(training[FEATURE_COLS])
-    recent          = training.tail(20).copy()
+    fitted           = training["trend"] + model.predict(training[FEATURE_COLS])
+    recent           = training.tail(20).copy()
     recent["fitted"] = fitted[-20:]
-    ratio           = recent[target_col] / recent["fitted"].replace(0, np.nan)
-    uplift          = ratio.median()
+    ratio            = recent[target_col] / recent["fitted"].replace(0, np.nan)
+    uplift           = ratio.median()
     if np.isnan(uplift) or uplift <= 0:
         uplift = 1.0
 
     oob = getattr(model, "oob_score_", None)
-    print(f", uplift={uplift:.3f}" + (f", OOB R²={oob:.3f}" if oob else ""))
+    print(f", uplift={uplift:.3f}" + (f", OOB R2={oob:.3f}" if oob else ""))
 
     future = future.copy()
     future["trend"]    = trend_fn(future["day_index"].values)
@@ -182,9 +194,9 @@ def train_and_forecast(daily, future, target_col):
 
     return future[["date","forecast"]].set_index("date")["forecast"]
 
-# ── Bar forecasts (4 models) ──────────────────────────────────
+
 def run_bar_models(bar_sales, weather):
-    print(f"\n── Bar models (shop={SHOP_ID}) ──")
+    print(f"\n-- Bar models (shop={SHOP_ID}) --")
     daily  = weekly_to_daily(bar_sales, ["rfm","rfb","rff","rfd"], weather)
     future = build_future(weather, daily["day_index"].max(), daily["date"].max())
 
@@ -205,9 +217,13 @@ def run_bar_models(bar_sales, weather):
         })
     return records
 
-# ── Retail forecasts (4 models) ───────────────────────────────
+
 def run_retail_models(retail_sales, weather):
-    print(f"\n── Retail models (shop={SHOP_ID}) ──")
+    print(f"\n-- Retail models (shop={SHOP_ID}) --")
+
+    if retail_sales.empty or len(retail_sales) < 5:
+        print("  Not enough retail data - skipping retail forecasts")
+        return []
 
     rs = retail_sales.copy()
     rs["rfm_total"] = rs["rfm_1kg"] + rs["rfm_200g"]
@@ -221,7 +237,6 @@ def run_retail_models(retail_sales, weather):
 
     results = {ct: train_and_forecast(daily, future, ct) for ct in total_cols}
 
-    # Historical size ratios
     def size_ratio(a, b):
         total = retail_sales[a].sum() + retail_sales[b].sum()
         return retail_sales[a].sum() / total if total > 0 else 0.5
@@ -251,7 +266,7 @@ def run_retail_models(retail_sales, weather):
         })
     return records
 
-# ── Main ──────────────────────────────────────────────────────
+
 def main():
     print(f"=== Forecast job={JOB_ID} shop={SHOP_ID} started {datetime.utcnow().isoformat()} ===")
     update_job("running")
@@ -267,8 +282,10 @@ def main():
         retail_recs = run_retail_models(retail_sales, weather)
 
         print(f"\nUpserting {len(bar_recs)} bar + {len(retail_recs)} retail forecast rows...")
-        sb_upsert("forecasts", bar_recs)
-        sb_upsert("forecasts", retail_recs)
+        if bar_recs:
+            sb_upsert("forecasts", bar_recs)
+        if retail_recs:
+            sb_upsert("forecasts", retail_recs)
 
         update_job("done")
         print(f"=== Complete {datetime.utcnow().isoformat()} ===")
@@ -277,6 +294,7 @@ def main():
         print(f"ERROR: {e}", file=sys.stderr)
         update_job("error", str(e))
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
