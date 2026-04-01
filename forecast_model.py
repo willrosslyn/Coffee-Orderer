@@ -206,7 +206,8 @@ def main():
         print(f"  Bar: {len(bar_sales)} days | Retail: {len(retail_sales)} days | Weather: {len(weather)} days", flush=True)
 
         # Auto-detect Saturday trading
-        include_saturday = detect_saturday_trading(bar_sales)
+        include_saturday = os.environ.get("HAS_SATURDAY", "false").lower() == "true"
+        print(f"  Saturday trading: {include_saturday}", flush=True)
 
         # ── Bar models ────────────────────────────────────────
         print("\n-- Bar models --", flush=True)
