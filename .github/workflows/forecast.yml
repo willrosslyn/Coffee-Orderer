@@ -45,7 +45,9 @@ jobs:
         env:
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SHOP_ID:              ${{ github.event.client_payload.shop_id || inputs.shop_id }}
           JOB_ID:               ${{ github.event.client_payload.job_id || inputs.job_id }}
+          HAS_SATURDAY:         ${{ github.event.client_payload.has_saturday || 'false' }}
         run: |
           curl -s -X PATCH "$SUPABASE_URL/rest/v1/forecast_jobs?id=eq.$JOB_ID" \
             -H "apikey: $SUPABASE_SERVICE_KEY" \
