@@ -38,18 +38,21 @@ def sb_get(table, params):
 
 
 def sb_upsert(table, records):
-    # Delete existing forecasts for this shop first
-    requests.delete(
+    del_resp = requests.delete(
         f"{SUPABASE_URL}/rest/v1/{table}?shop_id=eq.{SHOP_ID}",
         headers=HEADERS
     )
-    # Insert fresh records in batches
+    print(f"Delete {table}: {del_resp.status_code}")
+
     for i in range(0, len(records), 200):
+        batch = records[i:i+200]
+        print(f"Inserting batch {i//200}, first record: {batch[0]}")
         r = requests.post(
             f"{SUPABASE_URL}/rest/v1/{table}",
             headers={**HEADERS, "Prefer": "return=minimal"},
-            json=records[i:i+200]
+            json=batch
         )
+        print(f"Response: {r.status_code} {r.text[:300]}")
         if r.status_code not in (200, 201):
             raise Exception(f"Upsert {table} failed: {r.status_code} {r.text}")
 
