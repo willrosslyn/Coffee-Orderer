@@ -1,7 +1,7 @@
 """
 Coffee Ordering System v5 - Multi-shop RF Forecast Model
-8 models per shop: 4 bar (RFM/RFB/RFF/RFD) + 4 retail (RFM/RFB/RFF/FTScoop)
-Retail models train on combined 1kg+200g totals, split by historical size ratio.
+4 bar models (RFM/RFB/RFF/RFD) + 4 retail models (RFM/RFB/RFF/FTScoop)
+Bar data is daily. Retail data is weekly (expanded to daily).
 Triggered via GitHub Actions repository_dispatch with shop_id + job_id payload.
 """
 
@@ -73,7 +73,9 @@ def fetch_bar_sales():
     df = pd.DataFrame(rows)
     if df.empty:
         raise Exception(f"No bar sales found for shop_id={SHOP_ID}")
-    df["week"] = pd.to_datetime(df["week"])
+    # Rename week to date — bar data is already daily rows
+    df = df.rename(columns={"week": "date"})
+    df["date"] = pd.to_datetime(df["date"])
     for c in ["rfm","rfb","rff","rfd"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     return df
@@ -112,7 +114,22 @@ def fetch_weather():
     return df
 
 
+def bar_to_daily(bar_df, weather_df):
+    """Bar data is already daily — just merge weather and add features."""
+    daily = bar_df.copy()
+    daily = daily.merge(weather_df, on="date", how="left")
+
+    for c in ["temp","rainfall","cloud_cover","sunrise"]:
+        daily[c] = daily[c].ffill().fillna(weather_df[c].median())
+
+    daily["dow"]        = daily["date"].dt.dayofweek
+    daily["day_index"]  = range(len(daily))
+    daily["is_holiday"] = daily["date"].isin(BANK_HOLIDAYS).astype(int)
+    return daily
+
+
 def weekly_to_daily(weekly_df, value_cols, weather_df):
+    """Retail data is weekly — expand to daily rows."""
     records = []
     for _, row in weekly_df.iterrows():
         week_start = row["week"]
@@ -197,7 +214,7 @@ def train_and_forecast(daily, future, target_col):
 
 def run_bar_models(bar_sales, weather):
     print(f"\n-- Bar models (shop={SHOP_ID}) --")
-    daily  = weekly_to_daily(bar_sales, ["rfm","rfb","rff","rfd"], weather)
+    daily  = bar_to_daily(bar_sales, weather)
     future = build_future(weather, daily["day_index"].max(), daily["date"].max())
 
     results = {ct: train_and_forecast(daily, future, ct)
@@ -276,7 +293,7 @@ def main():
         bar_sales    = fetch_bar_sales()
         retail_sales = fetch_retail_sales()
         weather      = fetch_weather()
-        print(f"  Bar: {len(bar_sales)} weeks | Retail: {len(retail_sales)} weeks | Weather: {len(weather)} days")
+        print(f"  Bar: {len(bar_sales)} days | Retail: {len(retail_sales)} weeks | Weather: {len(weather)} days")
 
         bar_recs    = run_bar_models(bar_sales, weather)
         retail_recs = run_retail_models(retail_sales, weather)
