@@ -38,6 +38,7 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           SHOP_ID:              ${{ github.event.client_payload.shop_id || inputs.shop_id }}
           JOB_ID:               ${{ github.event.client_payload.job_id  || inputs.job_id  }}
+          HAS_SATURDAY:         ${{ github.event.client_payload.has_saturday || 'false' }}
         run: python forecast_model.py
 
       - name: Mark job failed on error
