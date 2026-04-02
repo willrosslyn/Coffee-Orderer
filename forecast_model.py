@@ -196,6 +196,7 @@ def train_and_forecast(daily, future, target_col):
 
 def main():
     print(f"=== Forecast job={JOB_ID} shop={SHOP_ID} started {datetime.utcnow().isoformat()} ===", flush=True)
+    print(f"  HAS_SATURDAY env: '{os.environ.get('HAS_SATURDAY', 'NOT SET')}'", flush=True)
     update_job("running")
 
     try:
