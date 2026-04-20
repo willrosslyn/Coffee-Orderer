@@ -16,10 +16,10 @@ import sys
 import requests
 from datetime import datetime, timedelta
 
-VISUAL_CROSSING_KEY  = os.environ["4WWZH8VR79RMDE5J9KLFWVL6T"]
-SUPABASE_URL         = os.environ["https://wvpkztolfgvkagjylyuj.supabase.co"]
-SUPABASE_SERVICE_KEY = os.environ["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind2cGt6dG9sZmd2a2FnanlseXVqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTAzMjcxOSwiZXhwIjoyMDkwNjA4NzE5fQ.G-bZGmXGoiW0UDzb6V7G7yvOj6Spw4qExxFZvQ5BFEs"]
-LOCATION             = os.environ.get("London,UK", "London,UK")
+VISUAL_CROSSING_KEY  = os.environ["VISUAL_CROSSING_KEY"]
+SUPABASE_URL         = os.environ["SUPABASE_URL"]
+SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
+LOCATION             = os.environ.get("WEATHER_LOCATION", "London,UK")
 
 SUPABASE_HEADERS = {
     "apikey":        SUPABASE_SERVICE_KEY,
