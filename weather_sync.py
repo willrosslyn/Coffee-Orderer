@@ -57,7 +57,7 @@ def fetch_weather(start_date: str, end_date: str) -> list:
     url = (
         f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/"
         f"timeline/{LOCATION}/{start_date}/{end_date}"
-        f"?unitGroup=metric"
+        f"?unitGroup=us"
         f"&elements=datetime,temp,precip,cloudcover,sunrise"
         f"&include=days"
         f"&key={VISUAL_CROSSING_KEY}"
