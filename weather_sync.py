@@ -111,7 +111,7 @@ def upsert_weather(rows: list):
 def main():
     today = datetime.utcnow().date()
     start_date = (today - timedelta(days=7)).strftime("%Y-%m-%d")
-    end_date   = (today + timedelta(days=28)).strftime("%Y-%m-%d")
+    end_date   = (today + timedelta(days=27)).strftime("%Y-%m-%d")
 
     print(f"=== Weather sync started {datetime.utcnow().isoformat()} ===", flush=True)
     print(f"  Location:   {LOCATION}", flush=True)
