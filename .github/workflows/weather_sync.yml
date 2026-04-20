@@ -25,8 +25,8 @@ jobs:
 
       - name: Run weather sync
         env:
-          VISUAL_CROSSING_KEY:  ${{4WWZH8VR79RMDE5J9KLFWVL6T}}
-          SUPABASE_URL:         ${{https://wvpkztolfgvkagjylyuj.supabase.co}}
-          SUPABASE_SERVICE_KEY: ${{eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind2cGt6dG9sZmd2a2FnanlseXVqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTAzMjcxOSwiZXhwIjoyMDkwNjA4NzE5fQ.G-bZGmXGoiW0UDzb6V7G7yvOj6Spw4qExxFZvQ5BFEs}}
-          WEATHER_LOCATION:     ${{London,UK}}
+          VISUAL_CROSSING_KEY:  ${{ secrets.VISUAL_CROSSING_KEY }}
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WEATHER_LOCATION:     ${{ secrets.WEATHER_LOCATION }}
         run: python weather_sync.py
