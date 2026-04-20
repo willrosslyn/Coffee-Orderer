@@ -1,0 +1,32 @@
+name: Weather Sync
+
+on:
+  schedule:
+    # Every Monday at 05:00 UTC (before staff arrive)
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
+    # Also allow manual trigger from GitHub Actions tab
+
+jobs:
+  sync-weather:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run weather sync
+        env:
+          VISUAL_CROSSING_KEY:  ${{4WWZH8VR79RMDE5J9KLFWVL6T}}
+          SUPABASE_URL:         ${{https://wvpkztolfgvkagjylyuj.supabase.co}}
+          SUPABASE_SERVICE_KEY: ${{eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind2cGt6dG9sZmd2a2FnanlseXVqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTAzMjcxOSwiZXhwIjoyMDkwNjA4NzE5fQ.G-bZGmXGoiW0UDzb6V7G7yvOj6Spw4qExxFZvQ5BFEs}}
+          WEATHER_LOCATION:     ${{London,UK}}
+        run: python weather_sync.py
