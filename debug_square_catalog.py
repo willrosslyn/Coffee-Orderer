@@ -1,11 +1,11 @@
 """
 debug_square_catalog.py
-Lists all suppliers (vendors) and their linked catalog items from Square.
-Run this to find the exact supplier names and item IDs for RFM/RFB/RFF.
+Debugs Square setup to find how supplier/coffee usage is tracked.
 """
 
 import os
 import requests
+from datetime import datetime, timedelta, timezone
 
 SQUARE_ACCESS_TOKEN = os.environ["SQUARE_ACCESS_TOKEN"]
 
@@ -22,22 +22,77 @@ def get_vendors():
     resp = requests.post(
         f"{SQUARE_BASE}/vendors/search",
         headers=SQUARE_HEADERS,
-        json={},
+        json={"filter": {}, "sort": {"field": "NAME", "order": "ASC"}},
         timeout=30
     )
+    print(f"Vendors API status: {resp.status_code}", flush=True)
+    if resp.status_code == 200:
+        vendors = resp.json().get("vendors", [])
+        print(f"\n=== VENDORS ({len(vendors)}) ===")
+        for v in vendors:
+            print(f"  ID: {v['id']} | Name: '{v.get('name', '')}' | Status: {v.get('status', '')}")
+        return vendors
+    else:
+        print(f"  Vendors API error: {resp.text[:200]}")
+        return []
+
+
+def get_locations():
+    resp = requests.get(f"{SQUARE_BASE}/locations", headers=SQUARE_HEADERS)
     resp.raise_for_status()
-    vendors = resp.json().get("vendors", [])
-    print(f"\n=== VENDORS ({len(vendors)}) ===")
-    for v in vendors:
-        print(f"  ID: {v['id']} | Name: '{v.get('name', '')}' | Status: {v.get('status', '')}")
-    return vendors
+    locations = []
+    for loc in resp.json().get("locations", []):
+        locations.append((loc["id"], loc.get("name", "")))
+        print(f"  Location: '{loc.get('name','')}' ID: {loc['id']}")
+    return locations
 
 
-def get_catalog_items_with_vendor():
-    """List catalog items that have vendor/supplier info."""
+def check_inventory_adjustments(location_id, location_name):
+    """Check what inventory adjustment types exist for this location last week."""
+    today    = datetime.now(timezone.utc)
+    week_ago = today - timedelta(days=7)
+
+    resp = requests.post(
+        f"{SQUARE_BASE}/inventory/changes/batch-retrieve",
+        headers=SQUARE_HEADERS,
+        json={
+            "location_ids":  [location_id],
+            "types":         ["ADJUSTMENT"],
+            "updated_after": week_ago.isoformat(),
+            "updated_before": today.isoformat(),
+        },
+        timeout=30
+    )
+    print(f"\n  Inventory adjustments for {location_name}: HTTP {resp.status_code}")
+    if resp.status_code == 200:
+        changes = resp.json().get("changes", [])
+        print(f"  Total adjustments: {len(changes)}")
+        # Show unique states and a sample
+        states = set()
+        samples = []
+        for c in changes[:5]:
+            adj = c.get("adjustment", {})
+            states.add(adj.get("to_state", ""))
+            samples.append({
+                "to_state":   adj.get("to_state"),
+                "from_state": adj.get("from_state"),
+                "quantity":   adj.get("quantity"),
+                "catalog_id": adj.get("catalog_object_id"),
+                "occurred":   adj.get("occurred_at", "")[:10],
+            })
+        print(f"  States seen: {states}")
+        print(f"  Sample adjustments:")
+        for s in samples:
+            print(f"    {s}")
+    else:
+        print(f"  Error: {resp.text[:200]}")
+
+
+def check_catalog_with_reporting():
+    """List items including reporting category which may show supplier grouping."""
     cursor = None
-    items_with_vendor = []
-
+    print(f"\n=== CATALOG ITEMS (checking for supplier/component links) ===")
+    count = 0
     while True:
         params = {"types": "ITEM"}
         if cursor:
@@ -53,42 +108,43 @@ def get_catalog_items_with_vendor():
 
         for obj in data.get("objects", []):
             item_data = obj.get("item_data", {})
-            name = item_data.get("name", "")
-            # Check for vendor info in item variations
-            for variation in item_data.get("variations", []):
-                var_data  = variation.get("item_variation_data", {})
-                vendor_infos = var_data.get("item_variation_vendor_infos", [])
-                sku = var_data.get("sku", "")
-                if vendor_infos or sku:
-                    items_with_vendor.append({
-                        "item_name":    name,
-                        "var_name":     var_data.get("name", ""),
-                        "var_id":       variation["id"],
-                        "sku":          sku,
-                        "vendor_infos": vendor_infos,
-                    })
+            name      = item_data.get("name", "")
+            # Print everything that might relate to coffee/supplier
+            keywords = ["rfm","rfb","rff","rfd","uses","supplier","coffee",
+                        "espresso","blend","filter","decaf","flat","latte",
+                        "cappuccino","cortado","drip","batch"]
+            if any(k in name.lower() for k in keywords):
+                count += 1
+                cats = [c.get("name","") for c in item_data.get("categories", [])]
+                print(f"  '{name}' | Categories: {cats}")
+                for var in item_data.get("variations", []):
+                    vd  = var.get("item_variation_data", {})
+                    sku = vd.get("sku", "")
+                    vname = vd.get("name", "")
+                    vendor_infos = vd.get("item_variation_vendor_infos", [])
+                    if sku or vendor_infos:
+                        print(f"    Variation: '{vname}' SKU:'{sku}' Vendors:{vendor_infos}")
 
         cursor = data.get("cursor")
         if not cursor:
             break
-
-    print(f"\n=== CATALOG ITEMS WITH VENDOR/SKU INFO ({len(items_with_vendor)}) ===")
-    for item in items_with_vendor:
-        vendor_ids = [v.get("item_variation_vendor_info_data", {}).get("vendor_id", "")
-                      for v in item["vendor_infos"]]
-        vendor_skus = [v.get("item_variation_vendor_info_data", {}).get("sku", "")
-                       for v in item["vendor_infos"]]
-        print(f"  Item: '{item['item_name']}' | Variation: '{item['var_name']}' "
-              f"| SKU: '{item['sku']}' | Vendor IDs: {vendor_ids} | Vendor SKUs: {vendor_skus}")
-        print(f"    Variation ID: {item['var_id']}")
-
-    return items_with_vendor
+    print(f"  Total coffee-related items: {count}")
 
 
 def main():
-    print("=== Square Vendor/Supplier Debug ===", flush=True)
+    print("=== Square Supplier Debug ===\n", flush=True)
+
+    print("--- Locations ---")
+    locations = get_locations()
+
+    print("\n--- Vendors ---")
     get_vendors()
-    get_catalog_items_with_vendor()
+
+    print("\n--- Inventory Adjustments (first location) ---")
+    if locations:
+        check_inventory_adjustments(locations[0][0], locations[0][1])
+
+    check_catalog_with_reporting()
 
 
 if __name__ == "__main__":
