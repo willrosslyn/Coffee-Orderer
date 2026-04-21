@@ -1,0 +1,31 @@
+name: Forecast Trigger
+
+on:
+  schedule:
+    # Every Monday at 06:00 UTC (after weather at 05:00 and Square at 05:30)
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  trigger-forecasts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Trigger forecast models
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GITHUB_TOKEN_PAT:     ${{ secrets.GITHUB_TOKEN_PAT }}
+          GITHUB_REPO:          ${{ github.repository }}
+        run: python forecast_trigger.py
