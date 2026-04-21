@@ -3,13 +3,15 @@ square_sales_sync.py
 Pulls last week's daily coffee sales from Square and upserts into Supabase.
 
 Bar coffee (RFM/RFB/RFF):
-  - Pulled from Inventory API adjustments (supplier usage / SOLD state)
+  - Pulled from Orders API using reporting category IDs
+  - Each line item's variation is mapped to its parent item's reporting_category_id
+  - RFW 200g category = rfm, RFB 200g = rfb, RFF 200g = rff
 
 Bar coffee (RFD - decaf):
   - Pulled from Orders API — counts line items that have a "Decaf" modifier
 
 Retail coffee (1kg, 200g bags etc):
-  - Pulled from Orders API (direct item sales)
+  - Pulled from Orders API by item name (direct sales)
 
 Runs every Monday via GitHub Actions — syncs Mon-Fri of the previous week.
 
@@ -48,6 +50,14 @@ SUPABASE_HEADERS = {
 # Name of the decaf modifier in Square
 DECAF_MODIFIER_NAME = "Decaf"
 
+# ── Reporting category ID -> sales_bar column ─────────────────────────────────
+# These are the REGULAR_CATEGORY IDs from Square that map to bar coffee suppliers
+BAR_CATEGORY_MAP = {
+    "A2ZNWW447QACM3MC2WBSBZ76": "rfm",   # RFW 200g  (= RFM)
+    "YJS2ONRSUIV2XLDHY55RUOOX": "rfb",   # RFB 200g
+    "JAETG4OASNYOFKXZ4ODWS7NW": "rff",   # RFF 200g
+}
+
 # ── Location mapping ──────────────────────────────────────────────────────────
 LOCATION_MAP = {
     "London Wall":              "LDW",
@@ -61,16 +71,7 @@ LOCATION_MAP = {
     "Liverpool Street Station": "LSS",
 }
 
-# ── SKU mappings — update left side to match exact Square item names ──────────
-
-# Bar: matched via inventory adjustments (supplier usage items)
-BAR_SKUS = {
-    "USES RFM": "rfm",
-    "USES RFB": "rfb",
-    "USES RFF": "rff",
-}
-
-# Retail: matched via order line item names (direct sales)
+# ── Retail SKU mappings — update left side to match exact Square item names ───
 RETAIL_SKUS = {
     "RFM 1KG":  "rfm_1kg",
     "RFM 200G": "rfm_200g",
@@ -101,15 +102,17 @@ def get_locations() -> dict:
     return locations
 
 
-def get_bar_catalog_ids() -> dict:
+def build_variation_category_map() -> dict:
     """
-    Returns {catalog_object_id: sales_bar_column} for BAR_SKUS.
-    Looks up item variation IDs from the Square catalog.
+    Scans all catalog items and returns:
+    {variation_id: bar_column}
+    for any variation whose parent item has a reporting category in BAR_CATEGORY_MAP.
     """
-    cursor      = None
-    catalog_map = {}
+    cursor  = None
+    var_map = {}
+
     while True:
-        params = {"types": "ITEM_VARIATION"}
+        params = {"types": "ITEM"}
         if cursor:
             params["cursor"] = cursor
         resp = requests.get(
@@ -120,76 +123,29 @@ def get_bar_catalog_ids() -> dict:
         )
         resp.raise_for_status()
         data = resp.json()
+
         for obj in data.get("objects", []):
-            name = obj.get("item_variation_data", {}).get("name", "").strip().upper()
-            col  = BAR_SKUS.get(name)
+            item_data = obj.get("item_data", {})
+            rep_cat   = item_data.get("reporting_category", {})
+            rep_id    = rep_cat.get("id", "")
+            col       = BAR_CATEGORY_MAP.get(rep_id)
             if col:
-                catalog_map[obj["id"]] = col
-        cursor = data.get("cursor")
-        if not cursor:
-            break
-
-    print(f"  Found {len(catalog_map)}/{len(BAR_SKUS)} bar catalog item IDs", flush=True)
-    return catalog_map
-
-
-def get_bar_daily_sales(location_id: str, catalog_map: dict,
-                         start_dt: datetime, end_dt: datetime) -> dict:
-    """
-    Pull SOLD inventory adjustments for RFM/RFB/RFF at a given location.
-    Returns {date_str: {column: qty}}
-    """
-    if not catalog_map:
-        return {}
-
-    daily  = defaultdict(lambda: defaultdict(float))
-    cursor = None
-
-    while True:
-        body = {
-            "catalog_object_ids": list(catalog_map.keys()),
-            "location_ids":       [location_id],
-            "types":              ["ADJUSTMENT"],
-            "states":             ["SOLD"],
-            "updated_after":      start_dt.isoformat(),
-            "updated_before":     end_dt.isoformat(),
-        }
-        if cursor:
-            body["cursor"] = cursor
-
-        resp = requests.post(
-            f"{SQUARE_BASE}/inventory/changes/batch-retrieve",
-            headers=SQUARE_HEADERS,
-            json=body,
-            timeout=30
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-        for change in data.get("changes", []):
-            adj         = change.get("adjustment", {})
-            occurred_at = adj.get("occurred_at", "")
-            if not occurred_at:
-                continue
-            date_str   = occurred_at[:10]
-            catalog_id = adj.get("catalog_object_id")
-            col        = catalog_map.get(catalog_id)
-            quantity   = float(adj.get("quantity", 0))
-            if col and quantity > 0:
-                daily[date_str][col] += quantity
+                for var in item_data.get("variations", []):
+                    var_map[var["id"]] = col
 
         cursor = data.get("cursor")
         if not cursor:
             break
 
-    return daily
+    matched = len(var_map)
+    print(f"  Built variation->category map: {matched} bar variations found", flush=True)
+    if matched == 0:
+        print("  WARNING: No bar variations found — check BAR_CATEGORY_MAP IDs", flush=True)
+    return var_map
 
 
 def get_orders(location_id: str, start_dt: datetime, end_dt: datetime) -> list:
-    """
-    Fetch all completed orders for a location within a date range.
-    Handles pagination automatically.
-    """
+    """Fetch all completed orders for a location within a date range."""
     orders = []
     cursor = None
 
@@ -229,9 +185,32 @@ def get_orders(location_id: str, start_dt: datetime, end_dt: datetime) -> list:
     return orders
 
 
+def get_bar_daily_sales(orders: list, var_map: dict) -> dict:
+    """
+    Aggregate bar coffee sales from orders using reporting category map.
+    Returns {date_str: {column: qty}}
+    """
+    daily = defaultdict(lambda: defaultdict(float))
+
+    for order in orders:
+        closed_at = order.get("closed_at", "")
+        if not closed_at:
+            continue
+        date_str = closed_at[:10]
+
+        for item in order.get("line_items", []):
+            cat_obj_id = item.get("catalog_object_id", "")
+            col        = var_map.get(cat_obj_id)
+            if col:
+                qty = float(item.get("quantity", 0))
+                daily[date_str][col] += qty
+
+    return daily
+
+
 def get_rfd_daily_sales(orders: list) -> dict:
     """
-    Count line items that have a Decaf modifier as RFD units.
+    Count line items with a Decaf modifier as RFD units.
     Returns {date_str: {"rfd": count}}
     """
     daily = defaultdict(lambda: defaultdict(float))
@@ -249,8 +228,7 @@ def get_rfd_daily_sales(orders: list) -> dict:
                 for m in modifiers
             )
             if is_decaf:
-                qty = float(item.get("quantity", 1))
-                daily[date_str]["rfd"] += qty
+                daily[date_str]["rfd"] += float(item.get("quantity", 1))
 
     return daily
 
@@ -277,12 +255,12 @@ def get_retail_daily_sales(orders: list) -> dict:
     return daily
 
 
-def merge_bar_daily(inv_daily: dict, rfd_daily: dict) -> dict:
-    """Merge RFM/RFB/RFF from inventory with RFD from orders."""
-    all_dates = set(inv_daily.keys()) | set(rfd_daily.keys())
+def merge_bar_daily(bar_daily: dict, rfd_daily: dict) -> dict:
+    """Merge RFM/RFB/RFF from category map with RFD from decaf modifier."""
+    all_dates = set(bar_daily.keys()) | set(rfd_daily.keys())
     merged    = {}
     for date_str in all_dates:
-        merged[date_str] = {**inv_daily.get(date_str, {}),
+        merged[date_str] = {**bar_daily.get(date_str, {}),
                             **rfd_daily.get(date_str, {})}
     return merged
 
@@ -291,7 +269,7 @@ def merge_bar_daily(inv_daily: dict, rfd_daily: dict) -> dict:
 
 def upsert_bar(shop_id: str, daily: dict):
     """Upsert daily bar sales rows into sales_bar."""
-    all_bar_cols = set(BAR_SKUS.values()) | {"rfd"}
+    all_bar_cols = set(BAR_CATEGORY_MAP.values()) | {"rfd"}
     records      = []
     for date_str, cols in sorted(daily.items()):
         row = {c: round(cols.get(c, 0), 2) for c in all_bar_cols}
@@ -364,27 +342,27 @@ def main():
     print(f"  Syncing: {last_mon} to {last_fri}", flush=True)
 
     try:
-        locations   = get_locations()
-        catalog_map = get_bar_catalog_ids()
-
+        locations = get_locations()
         if not locations:
             raise Exception("No matching Square locations found — check LOCATION_MAP names")
+
+        # Build variation->bar column map once for all locations
+        var_map = build_variation_category_map()
 
         for loc_id, shop_id in locations.items():
             print(f"\n  Processing {shop_id}...", flush=True)
 
-            # Fetch all orders once — used for both RFD and retail
             orders = get_orders(loc_id, start_dt, end_dt)
             print(f"    Found {len(orders)} completed orders", flush=True)
 
-            # Bar: RFM/RFB/RFF from inventory + RFD from decaf modifier
-            inv_daily = get_bar_daily_sales(loc_id, catalog_map, start_dt, end_dt)
+            # Bar: RFM/RFB/RFF from reporting categories + RFD from decaf modifier
+            bar_daily = get_bar_daily_sales(orders, var_map)
             rfd_daily = get_rfd_daily_sales(orders)
-            bar_daily = merge_bar_daily(inv_daily, rfd_daily)
-            print(f"    Bar days found: {len(bar_daily)}", flush=True)
-            upsert_bar(shop_id, bar_daily)
+            merged    = merge_bar_daily(bar_daily, rfd_daily)
+            print(f"    Bar days found: {len(merged)}", flush=True)
+            upsert_bar(shop_id, merged)
 
-            # Retail: direct item sales from orders
+            # Retail: direct item sales
             retail_daily = get_retail_daily_sales(orders)
             print(f"    Retail days found: {len(retail_daily)}", flush=True)
             upsert_retail(shop_id, retail_daily)
