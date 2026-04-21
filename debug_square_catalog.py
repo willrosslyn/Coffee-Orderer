@@ -1,6 +1,6 @@
 """
 debug_square_catalog.py
-Debugs Square setup to find how supplier/coffee usage is tracked.
+Maps all item variations to their SKUs to understand supplier grouping.
 """
 
 import os
@@ -17,84 +17,23 @@ SQUARE_HEADERS = {
 }
 
 
-def get_vendors():
-    """List all vendors/suppliers."""
-    resp = requests.post(
-        f"{SQUARE_BASE}/vendors/search",
-        headers=SQUARE_HEADERS,
-        json={"filter": {}, "sort": {"field": "NAME", "order": "ASC"}},
-        timeout=30
-    )
-    print(f"Vendors API status: {resp.status_code}", flush=True)
-    if resp.status_code == 200:
-        vendors = resp.json().get("vendors", [])
-        print(f"\n=== VENDORS ({len(vendors)}) ===")
-        for v in vendors:
-            print(f"  ID: {v['id']} | Name: '{v.get('name', '')}' | Status: {v.get('status', '')}")
-        return vendors
-    else:
-        print(f"  Vendors API error: {resp.text[:200]}")
-        return []
-
-
 def get_locations():
     resp = requests.get(f"{SQUARE_BASE}/locations", headers=SQUARE_HEADERS)
     resp.raise_for_status()
     locations = []
     for loc in resp.json().get("locations", []):
         locations.append((loc["id"], loc.get("name", "")))
-        print(f"  Location: '{loc.get('name','')}' ID: {loc['id']}")
     return locations
 
 
-def check_inventory_adjustments(location_id, location_name):
-    """Check what inventory adjustment types exist for this location last week."""
-    today    = datetime.now(timezone.utc)
-    week_ago = today - timedelta(days=7)
+def get_all_variation_skus():
+    """Build a map of {variation_id: sku} for all catalog items."""
+    cursor   = None
+    sku_map  = {}
+    all_vars = []
 
-    resp = requests.post(
-        f"{SQUARE_BASE}/inventory/changes/batch-retrieve",
-        headers=SQUARE_HEADERS,
-        json={
-            "location_ids":  [location_id],
-            "types":         ["ADJUSTMENT"],
-            "updated_after": week_ago.isoformat(),
-            "updated_before": today.isoformat(),
-        },
-        timeout=30
-    )
-    print(f"\n  Inventory adjustments for {location_name}: HTTP {resp.status_code}")
-    if resp.status_code == 200:
-        changes = resp.json().get("changes", [])
-        print(f"  Total adjustments: {len(changes)}")
-        # Show unique states and a sample
-        states = set()
-        samples = []
-        for c in changes[:5]:
-            adj = c.get("adjustment", {})
-            states.add(adj.get("to_state", ""))
-            samples.append({
-                "to_state":   adj.get("to_state"),
-                "from_state": adj.get("from_state"),
-                "quantity":   adj.get("quantity"),
-                "catalog_id": adj.get("catalog_object_id"),
-                "occurred":   adj.get("occurred_at", "")[:10],
-            })
-        print(f"  States seen: {states}")
-        print(f"  Sample adjustments:")
-        for s in samples:
-            print(f"    {s}")
-    else:
-        print(f"  Error: {resp.text[:200]}")
-
-
-def check_catalog_with_reporting():
-    """List items including reporting category which may show supplier grouping."""
-    cursor = None
-    print(f"\n=== CATALOG ITEMS (checking for supplier/component links) ===")
-    count = 0
     while True:
-        params = {"types": "ITEM"}
+        params = {"types": "ITEM_VARIATION"}
         if cursor:
             params["cursor"] = cursor
         resp = requests.get(
@@ -107,44 +46,90 @@ def check_catalog_with_reporting():
         data = resp.json()
 
         for obj in data.get("objects", []):
-            item_data = obj.get("item_data", {})
-            name      = item_data.get("name", "")
-            # Print everything that might relate to coffee/supplier
-            keywords = ["rfm","rfb","rff","rfd","uses","supplier","coffee",
-                        "espresso","blend","filter","decaf","flat","latte",
-                        "cappuccino","cortado","drip","batch"]
-            if any(k in name.lower() for k in keywords):
-                count += 1
-                cats = [c.get("name","") for c in item_data.get("categories", [])]
-                print(f"  '{name}' | Categories: {cats}")
-                for var in item_data.get("variations", []):
-                    vd  = var.get("item_variation_data", {})
-                    sku = vd.get("sku", "")
-                    vname = vd.get("name", "")
-                    vendor_infos = vd.get("item_variation_vendor_infos", [])
-                    if sku or vendor_infos:
-                        print(f"    Variation: '{vname}' SKU:'{sku}' Vendors:{vendor_infos}")
+            var_data = obj.get("item_variation_data", {})
+            name     = var_data.get("name", "")
+            sku      = var_data.get("sku", "")
+            obj_id   = obj["id"]
+            sku_map[obj_id] = sku
+            all_vars.append((name, sku, obj_id))
 
         cursor = data.get("cursor")
         if not cursor:
             break
-    print(f"  Total coffee-related items: {count}")
+
+    # Print variations grouped by SKU
+    from collections import defaultdict
+    by_sku = defaultdict(list)
+    for name, sku, obj_id in all_vars:
+        by_sku[sku].append(name)
+
+    print(f"\n=== VARIATIONS BY SKU ===")
+    for sku in sorted(by_sku.keys()):
+        if sku:  # only show ones with a SKU set
+            names = sorted(set(by_sku[sku]))
+            print(f"  SKU '{sku}': {names}")
+
+    print(f"\n=== ALL SKUS FOUND: {sorted(s for s in by_sku.keys() if s)} ===")
+    return sku_map
+
+
+def sample_orders(location_id, location_name, sku_map):
+    """Pull a sample of recent orders and show what SKUs appear."""
+    today    = datetime.now(timezone.utc)
+    week_ago = today - timedelta(days=7)
+
+    resp = requests.post(
+        f"{SQUARE_BASE}/orders/search",
+        headers=SQUARE_HEADERS,
+        json={
+            "location_ids": [location_id],
+            "query": {
+                "filter": {
+                    "state_filter": {"states": ["COMPLETED"]},
+                    "date_time_filter": {
+                        "closed_at": {
+                            "start_at": week_ago.isoformat(),
+                            "end_at":   today.isoformat(),
+                        }
+                    }
+                }
+            },
+            "limit": 10,
+        },
+        timeout=30
+    )
+    resp.raise_for_status()
+    orders = resp.json().get("orders", [])
+    print(f"\n=== SAMPLE ORDERS for {location_name} (last 7 days, first 10) ===")
+    print(f"  Total returned: {len(orders)}")
+
+    from collections import defaultdict
+    sku_totals = defaultdict(float)
+
+    for order in orders:
+        for item in order.get("line_items", []):
+            name       = item.get("name", "")
+            qty        = float(item.get("quantity", 0))
+            cat_obj_id = item.get("catalog_object_id", "")
+            sku        = sku_map.get(cat_obj_id, "NO_SKU")
+            modifiers  = [m.get("name","") for m in item.get("modifiers", [])]
+            print(f"    Item: '{name}' qty:{qty} SKU:'{sku}' mods:{modifiers}")
+            if sku and sku != "NO_SKU":
+                sku_totals[sku] += qty
+
+    print(f"\n  SKU totals from sample orders: {dict(sku_totals)}")
 
 
 def main():
-    print("=== Square Supplier Debug ===\n", flush=True)
-
-    print("--- Locations ---")
+    print("=== Square SKU/Supplier Debug ===\n", flush=True)
     locations = get_locations()
+    print(f"Locations: {[(n, i) for i,n in locations]}")
 
-    print("\n--- Vendors ---")
-    get_vendors()
+    sku_map = get_all_variation_skus()
 
-    print("\n--- Inventory Adjustments (first location) ---")
     if locations:
-        check_inventory_adjustments(locations[0][0], locations[0][1])
-
-    check_catalog_with_reporting()
+        # Use first location as sample
+        sample_orders(locations[0][0], locations[0][1], sku_map)
 
 
 if __name__ == "__main__":
