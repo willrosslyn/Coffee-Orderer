@@ -30,7 +30,7 @@ SUPABASE_URL         = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 
 # ── Set to False when you are happy the data looks correct ────────────────────
-DRY_RUN = True
+DRY_RUN = False
 
 SQUARE_BASE = "https://connect.squareup.com/v2"
 SQUARE_HEADERS = {
