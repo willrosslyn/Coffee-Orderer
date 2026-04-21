@@ -219,7 +219,6 @@ def get_rfd_daily_sales(orders: list) -> dict:
 
 
 def get_retail_daily_sales(orders: list) -> dict:
-    """Pull retail SKU quantities from order line items."""
     daily = defaultdict(lambda: defaultdict(float))
     for order in orders:
         closed_at = order.get("closed_at", "")
@@ -227,8 +226,14 @@ def get_retail_daily_sales(orders: list) -> dict:
             continue
         date_str = closed_at[:10]
         for item in order.get("line_items", []):
-            name = item.get("name", "").strip().upper()
-            col  = RETAIL_SKUS.get(name)
+            # Square sometimes returns variation name in 'name' field
+            # Check both name and item name fields
+            name     = item.get("name", "").strip()
+            col      = RETAIL_SKUS.get(name)
+            if not col:
+                # Try the catalog_item_name field if present
+                catalog_name = item.get("catalog_item_name", "").strip()
+                col = RETAIL_SKUS.get(catalog_name)
             if col:
                 daily[date_str][col] += float(item.get("quantity", 0))
     return daily
