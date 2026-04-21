@@ -143,7 +143,7 @@ def get_orders(location_id: str, start_dt: datetime, end_dt: datetime) -> list:
                 f"{SQUARE_BASE}/orders/search",
                 headers=SQUARE_HEADERS,
                 json=body,
-                timeout=60
+                timeout=300
             )
             resp.raise_for_status()
             data = resp.json()
