@@ -29,6 +29,9 @@ SQUARE_ACCESS_TOKEN  = os.environ["SQUARE_ACCESS_TOKEN"]
 SUPABASE_URL         = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 
+# ── Set to False when you are happy the data looks correct ────────────────────
+DRY_RUN = True
+
 SQUARE_BASE = "https://connect.squareup.com/v2"
 SQUARE_HEADERS = {
     "Authorization":  f"Bearer {SQUARE_ACCESS_TOKEN}",
@@ -61,7 +64,6 @@ LOCATION_MAP = {
 # ── SKU mappings — update left side to match exact Square item names ──────────
 
 # Bar: matched via inventory adjustments (supplier usage items)
-# RFD is excluded here — it comes from the decaf modifier in orders
 BAR_SKUS = {
     "USES RFM": "rfm",
     "USES RFB": "rfb",
@@ -70,13 +72,13 @@ BAR_SKUS = {
 
 # Retail: matched via order line item names (direct sales)
 RETAIL_SKUS = {
-    "Roasted for Milk 1kg":  "rfm_1kg",
-    "Roasted for Milk 200g": "rfm_200g",
-    "Roasted for Black 1kg":  "rfb_1kg",
-    "Roasted for Black 200g": "rfb_200g",
-    "Roasted for Filter 1kg":  "rff_1kg",
-    "Roasted for Filter 200g": "rff_200g",
-    "FT Scoop": "ft_scoop",
+    "RFM 1KG":  "rfm_1kg",
+    "RFM 200G": "rfm_200g",
+    "RFB 1KG":  "rfb_1kg",
+    "RFB 200G": "rfb_200g",
+    "RFF 1KG":  "rff_1kg",
+    "RFF 200G": "rff_200g",
+    "FT SCOOP": "ft_scoop",
 }
 
 
@@ -230,7 +232,6 @@ def get_orders(location_id: str, start_dt: datetime, end_dt: datetime) -> list:
 def get_rfd_daily_sales(orders: list) -> dict:
     """
     Count line items that have a Decaf modifier as RFD units.
-    Each drink with the Decaf modifier = 1 unit of RFD (multiplied by line item qty).
     Returns {date_str: {"rfd": count}}
     """
     daily = defaultdict(lambda: defaultdict(float))
@@ -301,6 +302,12 @@ def upsert_bar(shop_id: str, daily: dict):
         print(f"    No bar sales to upsert for {shop_id}", flush=True)
         return
 
+    if DRY_RUN:
+        print(f"    DRY RUN - would upsert {len(records)} bar rows for {shop_id}:", flush=True)
+        for rec in records:
+            print(f"      {rec}", flush=True)
+        return
+
     r = requests.post(
         f"{SUPABASE_URL}/rest/v1/sales_bar?on_conflict=shop_id,week",
         headers={**SUPABASE_HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
@@ -322,6 +329,12 @@ def upsert_retail(shop_id: str, daily: dict):
 
     if not records:
         print(f"    No retail sales to upsert for {shop_id}", flush=True)
+        return
+
+    if DRY_RUN:
+        print(f"    DRY RUN - would upsert {len(records)} retail rows for {shop_id}:", flush=True)
+        for rec in records:
+            print(f"      {rec}", flush=True)
         return
 
     r = requests.post(
@@ -347,6 +360,7 @@ def main():
                         23, 59, 59, tzinfo=timezone.utc)
 
     print(f"=== Square sales sync started {datetime.now(timezone.utc).isoformat()} ===", flush=True)
+    print(f"  Mode: {'DRY RUN - no data will be written' if DRY_RUN else 'LIVE - writing to Supabase'}", flush=True)
     print(f"  Syncing: {last_mon} to {last_fri}", flush=True)
 
     try:
