@@ -26,6 +26,6 @@ jobs:
         env:
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          GITHUB_TOKEN_PAT:     ${{ secrets.GH_TOKEN_PAT }}
+          GH_TOKEN_PAT:     ${{ secrets.GH_TOKEN_PAT }}
           GITHUB_REPO:          ${{ github.repository }}
         run: python forecast_trigger.py
