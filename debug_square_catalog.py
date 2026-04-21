@@ -1,11 +1,10 @@
 """
 debug_square_catalog.py
-Maps all item variations to their SKUs to understand supplier grouping.
+Finds custom attributes on catalog items to locate supplier tags.
 """
 
 import os
 import requests
-from datetime import datetime, timedelta, timezone
 
 SQUARE_ACCESS_TOKEN = os.environ["SQUARE_ACCESS_TOKEN"]
 
@@ -17,23 +16,72 @@ SQUARE_HEADERS = {
 }
 
 
-def get_locations():
-    resp = requests.get(f"{SQUARE_BASE}/locations", headers=SQUARE_HEADERS)
-    resp.raise_for_status()
-    locations = []
-    for loc in resp.json().get("locations", []):
-        locations.append((loc["id"], loc.get("name", "")))
-    return locations
-
-
-def get_all_variation_skus():
-    """Build a map of {variation_id: sku} for all catalog items."""
-    cursor   = None
-    sku_map  = {}
-    all_vars = []
-
+def get_custom_attribute_definitions():
+    """List all custom attribute definitions for catalog objects."""
+    print("\n=== CUSTOM ATTRIBUTE DEFINITIONS ===")
+    cursor = None
     while True:
-        params = {"types": "ITEM_VARIATION"}
+        params = {"resource_type": "ITEM"}
+        if cursor:
+            params["cursor"] = cursor
+        resp = requests.get(
+            f"{SQUARE_BASE}/catalog/custom-attribute-definitions",
+            headers=SQUARE_HEADERS,
+            params=params,
+            timeout=30
+        )
+        print(f"  Status: {resp.status_code}")
+        if resp.status_code != 200:
+            print(f"  Error: {resp.text[:300]}")
+            break
+        data = resp.json()
+        defs = data.get("custom_attribute_definitions", [])
+        for d in defs:
+            print(f"  Key: '{d.get('key')}' | Name: '{d.get('name')}' | Type: '{d.get('type')}' | ID: {d.get('id')}")
+        cursor = data.get("cursor")
+        if not cursor:
+            break
+
+
+def get_item_with_custom_attrs(item_name_search="Flat White"):
+    """Fetch a specific item and show all its custom attributes."""
+    print(f"\n=== SEARCHING FOR ITEM: '{item_name_search}' ===")
+    resp = requests.post(
+        f"{SQUARE_BASE}/catalog/search",
+        headers=SQUARE_HEADERS,
+        json={
+            "text_filter": {"keyword": item_name_search},
+            "object_types": ["ITEM"],
+            "include_related_objects": True,
+        },
+        timeout=30
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    items = data.get("objects", [])
+    print(f"  Found {len(items)} items")
+    for obj in items[:3]:
+        item_data = obj.get("item_data", {})
+        name      = item_data.get("name", "")
+        custom    = obj.get("custom_attribute_values", {})
+        cats      = [c.get("name","") for c in item_data.get("categories", [])]
+        reporting = item_data.get("reporting_category", {})
+        print(f"\n  Item: '{name}'")
+        print(f"    Categories: {cats}")
+        print(f"    Reporting category: {reporting}")
+        print(f"    Custom attributes: {custom}")
+        for var in item_data.get("variations", [])[:2]:
+            vd     = var.get("item_variation_data", {})
+            vcustom = var.get("custom_attribute_values", {})
+            print(f"    Variation '{vd.get('name','')}' SKU:'{vd.get('sku','')}' custom:{vcustom}")
+
+
+def get_reporting_categories():
+    """List all reporting categories."""
+    print("\n=== REPORTING CATEGORIES ===")
+    cursor = None
+    while True:
+        params = {"types": "CATEGORY"}
         if cursor:
             params["cursor"] = cursor
         resp = requests.get(
@@ -44,92 +92,22 @@ def get_all_variation_skus():
         )
         resp.raise_for_status()
         data = resp.json()
-
         for obj in data.get("objects", []):
-            var_data = obj.get("item_variation_data", {})
-            name     = var_data.get("name", "")
-            sku      = var_data.get("sku", "")
-            obj_id   = obj["id"]
-            sku_map[obj_id] = sku
-            all_vars.append((name, sku, obj_id))
-
+            cat = obj.get("category_data", {})
+            name     = cat.get("name", "")
+            cat_type = cat.get("category_type", "")
+            print(f"  ID: {obj['id']} | Name: '{name}' | Type: '{cat_type}'")
         cursor = data.get("cursor")
         if not cursor:
             break
 
-    # Print variations grouped by SKU
-    from collections import defaultdict
-    by_sku = defaultdict(list)
-    for name, sku, obj_id in all_vars:
-        by_sku[sku].append(name)
-
-    print(f"\n=== VARIATIONS BY SKU ===")
-    for sku in sorted(by_sku.keys()):
-        if sku:  # only show ones with a SKU set
-            names = sorted(set(by_sku[sku]))
-            print(f"  SKU '{sku}': {names}")
-
-    print(f"\n=== ALL SKUS FOUND: {sorted(s for s in by_sku.keys() if s)} ===")
-    return sku_map
-
-
-def sample_orders(location_id, location_name, sku_map):
-    """Pull a sample of recent orders and show what SKUs appear."""
-    today    = datetime.now(timezone.utc)
-    week_ago = today - timedelta(days=7)
-
-    resp = requests.post(
-        f"{SQUARE_BASE}/orders/search",
-        headers=SQUARE_HEADERS,
-        json={
-            "location_ids": [location_id],
-            "query": {
-                "filter": {
-                    "state_filter": {"states": ["COMPLETED"]},
-                    "date_time_filter": {
-                        "closed_at": {
-                            "start_at": week_ago.isoformat(),
-                            "end_at":   today.isoformat(),
-                        }
-                    }
-                }
-            },
-            "limit": 10,
-        },
-        timeout=30
-    )
-    resp.raise_for_status()
-    orders = resp.json().get("orders", [])
-    print(f"\n=== SAMPLE ORDERS for {location_name} (last 7 days, first 10) ===")
-    print(f"  Total returned: {len(orders)}")
-
-    from collections import defaultdict
-    sku_totals = defaultdict(float)
-
-    for order in orders:
-        for item in order.get("line_items", []):
-            name       = item.get("name", "")
-            qty        = float(item.get("quantity", 0))
-            cat_obj_id = item.get("catalog_object_id", "")
-            sku        = sku_map.get(cat_obj_id, "NO_SKU")
-            modifiers  = [m.get("name","") for m in item.get("modifiers", [])]
-            print(f"    Item: '{name}' qty:{qty} SKU:'{sku}' mods:{modifiers}")
-            if sku and sku != "NO_SKU":
-                sku_totals[sku] += qty
-
-    print(f"\n  SKU totals from sample orders: {dict(sku_totals)}")
-
 
 def main():
-    print("=== Square SKU/Supplier Debug ===\n", flush=True)
-    locations = get_locations()
-    print(f"Locations: {[(n, i) for i,n in locations]}")
-
-    sku_map = get_all_variation_skus()
-
-    if locations:
-        # Use first location as sample
-        sample_orders(locations[0][0], locations[0][1], sku_map)
+    print("=== Square Custom Attribute / Supplier Debug ===\n", flush=True)
+    get_custom_attribute_definitions()
+    get_reporting_categories()
+    get_item_with_custom_attrs("Flat White")
+    get_item_with_custom_attrs("Americano")
 
 
 if __name__ == "__main__":
