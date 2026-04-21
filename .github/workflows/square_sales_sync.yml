@@ -1,15 +1,11 @@
-name: Square Sales Sync
+name: Debug Square Catalog
 
 on:
-  schedule:
-    # Every Monday at 05:30 UTC (after weather sync at 05:00)
-    - cron: '30 5 * * 1'
   workflow_dispatch:
 
 jobs:
-  sync-sales:
+  debug-catalog:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,9 +18,7 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Run Square sales sync
+      - name: List Square catalog items
         env:
-          SQUARE_ACCESS_TOKEN:  ${{ secrets.SQUARE_ACCESS_TOKEN }}
-          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python square_sales_sync.py
+          SQUARE_ACCESS_TOKEN: ${{ secrets.SQUARE_ACCESS_TOKEN }}
+        run: python debug_square_catalog.py
