@@ -58,6 +58,8 @@ LOCATION_MAP = {
 }
 
 DRINK_TO_BAR = {
+    "espresso":                  "rfb",
+    "Long Black":                "rfb",
     "americano":                 "rfb",
     "£1 americano":              "rfb",
     "batch brew":                "rff",
