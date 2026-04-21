@@ -306,16 +306,16 @@ def upsert_retail(shop_id: str, daily: dict):
 def main():
     today    = datetime.now(timezone.utc).date()
     last_mon = today - timedelta(days=today.weekday() + 7)
-    last_fri = last_mon + timedelta(days=4)
+    last_sat = last_mon + timedelta(days=5)
 
     start_dt = datetime(last_mon.year, last_mon.month, last_mon.day,
                         0, 0, 0, tzinfo=timezone.utc)
-    end_dt   = datetime(last_fri.year, last_fri.month, last_fri.day,
+    end_dt   = datetime(last_sat.year, last_sat.month, last_sat.day,
                         23, 59, 59, tzinfo=timezone.utc)
 
     print(f"=== Square sales sync started {datetime.now(timezone.utc).isoformat()} ===", flush=True)
     print(f"  Mode: {'DRY RUN - no data will be written' if DRY_RUN else 'LIVE - writing to Supabase'}", flush=True)
-    print(f"  Syncing: {last_mon} to {last_fri}", flush=True)
+    print(f"  Syncing: {last_mon} to {last_sat}", flush=True)
 
     try:
         locations = get_locations()
