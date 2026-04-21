@@ -70,13 +70,13 @@ BAR_SKUS = {
 
 # Retail: matched via order line item names (direct sales)
 RETAIL_SKUS = {
-    "RFM 1KG":  "rfm_1kg",
-    "RFM 200G": "rfm_200g",
-    "RFB 1KG":  "rfb_1kg",
-    "RFB 200G": "rfb_200g",
-    "RFF 1KG":  "rff_1kg",
-    "RFF 200G": "rff_200g",
-    "FT SCOOP": "ft_scoop",
+    "Roasted for Milk 1kg":  "rfm_1kg",
+    "Roasted for Milk 200g": "rfm_200g",
+    "Roasted for Black 1kg":  "rfb_1kg",
+    "Roasted for Black 200g": "rfb_200g",
+    "Roasted for Filter 1kg":  "rff_1kg",
+    "Roasted for Filter 200g": "rff_200g",
+    "FT Scoop": "ft_scoop",
 }
 
 
