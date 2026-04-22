@@ -44,7 +44,7 @@ SHOPS = {
     "LEM": False,
     "LUC": True,
     "FSS": False,
-    "LSS": False,
+    "LSS": True,
 }
 
 
