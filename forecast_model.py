@@ -1,8 +1,9 @@
 """
-Coffee Ordering System v8 - Multi-shop RF Forecast Model
-Supports Saturday trading - auto-detected from historical data.
-One row per date per shop with all bar + retail forecasts combined.
-Both bar and retail data are daily rows in their respective tables.
+Coffee Ordering System - Multi-shop RF Forecast Model
+Improvements:
+- Bank holiday days excluded from training
+- Added week_of_year, month, is_december, is_summer features
+- Saturday auto-detection from historical data
 """
 
 import os, sys, requests
@@ -23,11 +24,29 @@ HEADERS = {
 }
 
 BANK_HOLIDAYS = pd.to_datetime([
-    "2026-04-03","2026-04-06","2026-05-04","2026-05-25","2026-08-31",
-    "2027-04-02","2027-04-05","2027-05-03","2027-05-31","2027-08-30",
+    # 2025
+    "2025-04-18","2025-04-21","2025-05-05","2025-05-26","2025-08-25",
+    "2025-12-25","2025-12-26",
+    # 2026
+    "2026-01-01","2026-04-03","2026-04-06","2026-05-04","2026-05-25",
+    "2026-08-31","2026-12-25","2026-12-28",
+    # 2027
+    "2027-01-01","2027-04-02","2027-04-05","2027-05-03","2027-05-31",
+    "2027-08-30","2027-12-27","2027-12-28",
 ])
 
-FEATURE_COLS = ["dow","temp","rainfall","sunrise","is_holiday","cloud_cover"]
+FEATURE_COLS = [
+    "dow",
+    "week_of_year",
+    "month",
+    "is_december",
+    "is_summer",
+    "temp",
+    "rainfall",
+    "sunrise",
+    "cloud_cover",
+    "is_holiday",
+]
 
 
 def sb_get(table, params):
@@ -116,11 +135,22 @@ def fetch_weather():
 
 
 def detect_saturday_trading(bar_sales):
-    """Auto-detect if shop trades on Saturdays from historical data."""
-    sat = bar_sales[bar_sales["date"].dt.dayofweek == 5]
+    sat     = bar_sales[bar_sales["date"].dt.dayofweek == 5]
     has_sat = (sat["rfm"] > 0).any() if not sat.empty else False
     print(f"  Saturday trading detected: {has_sat}", flush=True)
     return has_sat
+
+
+def add_features(df):
+    """Add all model features to a dataframe that has a 'date' column."""
+    df = df.copy()
+    df["dow"]          = df["date"].dt.dayofweek
+    df["week_of_year"] = df["date"].dt.isocalendar().week.astype(int)
+    df["month"]        = df["date"].dt.month
+    df["is_december"]  = (df["date"].dt.month == 12).astype(int)
+    df["is_summer"]    = (df["date"].dt.month.isin([7, 8])).astype(int)
+    df["is_holiday"]   = df["date"].isin(BANK_HOLIDAYS).astype(int)
+    return df
 
 
 def to_daily(df, weather_df):
@@ -129,9 +159,8 @@ def to_daily(df, weather_df):
     daily = daily.merge(weather_df, on="date", how="left")
     for c in ["temp","rainfall","cloud_cover","sunrise"]:
         daily[c] = daily[c].ffill().fillna(weather_df[c].median())
-    daily["dow"]        = daily["date"].dt.dayofweek
-    daily["day_index"]  = range(len(daily))
-    daily["is_holiday"] = daily["date"].isin(BANK_HOLIDAYS).astype(int)
+    daily = add_features(daily)
+    daily["day_index"] = range(len(daily))
     return daily
 
 
@@ -139,7 +168,7 @@ def build_future(weather_df, last_index, last_date, n_days=90, include_saturday=
     """Build future feature rows for forecasting."""
     future_dates = []
     d = last_date + timedelta(days=1)
-    max_dow = 5 if include_saturday else 4  # 5=Sat, 4=Fri
+    max_dow = 5 if include_saturday else 4
     while len(future_dates) < n_days:
         if d.weekday() <= max_dow:
             future_dates.append(d)
@@ -149,15 +178,19 @@ def build_future(weather_df, last_index, last_date, n_days=90, include_saturday=
     future = future.merge(weather_df, on="date", how="left")
     for c in ["temp","rainfall","cloud_cover","sunrise"]:
         future[c] = future[c].ffill().fillna(weather_df[c].median())
-    future["dow"]        = future["date"].dt.dayofweek
-    future["day_index"]  = range(last_index + 1, last_index + 1 + len(future))
-    future["is_holiday"] = future["date"].isin(BANK_HOLIDAYS).astype(int)
+    future = add_features(future)
+    future["day_index"] = range(last_index + 1, last_index + 1 + len(future))
     return future
 
 
 def train_and_forecast(daily, future, target_col):
-    training = daily[daily[target_col].notna()].copy()
-    print(f"  {target_col}: {len(training)} training rows", end="", flush=True)
+    # Exclude bank holiday days from training
+    training = daily[
+        (daily[target_col].notna()) &
+        (daily["is_holiday"] == 0)
+    ].copy()
+
+    print(f"  {target_col}: {len(training)} training rows (excl. bank holidays)", end="", flush=True)
 
     t = training["day_index"].values
     y = training[target_col].values
@@ -196,7 +229,6 @@ def train_and_forecast(daily, future, target_col):
 
 def main():
     print(f"=== Forecast job={JOB_ID} shop={SHOP_ID} started {datetime.utcnow().isoformat()} ===", flush=True)
-    print(f"  HAS_SATURDAY env: '{os.environ.get('HAS_SATURDAY', 'NOT SET')}'", flush=True)
     update_job("running")
 
     try:
@@ -206,9 +238,7 @@ def main():
         weather      = fetch_weather()
         print(f"  Bar: {len(bar_sales)} days | Retail: {len(retail_sales)} days | Weather: {len(weather)} days", flush=True)
 
-        # Auto-detect Saturday trading
-        include_saturday = os.environ.get("HAS_SATURDAY", "false").lower() == "true"
-        print(f"  Saturday trading: {include_saturday}", flush=True)
+        include_saturday = detect_saturday_trading(bar_sales)
 
         # ── Bar models ────────────────────────────────────────
         print("\n-- Bar models --", flush=True)
