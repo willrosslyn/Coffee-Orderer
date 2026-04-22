@@ -66,6 +66,7 @@ DRINK_TO_BAR = {
     # RFB
     "americano":        "rfb",
     "£1 americano":     "rfb",
+    "iced filter":      "rfb",
     # RFF
     "batch brew":       "rff",
     "£1 batch brew":    "rff",
