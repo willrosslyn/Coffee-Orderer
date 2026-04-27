@@ -238,7 +238,9 @@ def main():
         weather      = fetch_weather()
         print(f"  Bar: {len(bar_sales)} days | Retail: {len(retail_sales)} days | Weather: {len(weather)} days", flush=True)
 
-        include_saturday = detect_saturday_trading(bar_sales)
+        SATURDAY_SHOPS = {"QVS", "LUC"}
+        include_saturday = SHOP_ID in SATURDAY_SHOPS
+        print(f"  Saturday trading: {include_saturday}", flush=True)
 
         # ── Bar models ────────────────────────────────────────
         print("\n-- Bar models --", flush=True)
