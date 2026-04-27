@@ -1,9 +1,7 @@
 """
 Coffee Ordering System - Multi-shop RF Forecast Model
-Improvements:
-- Bank holiday days excluded from training
-- Added week_of_year, month, is_december, is_summer features
-- Saturday auto-detection from historical data
+Bar: Random Forest with weather/seasonal features
+Retail: Rolling 8-week day-of-week average (simpler, more reliable for sparse data)
 """
 
 import os, sys, requests
@@ -35,18 +33,22 @@ BANK_HOLIDAYS = pd.to_datetime([
     "2027-08-30","2027-12-27","2027-12-28",
 ])
 
+SATURDAY_SHOPS = {"QVS", "LUC"}
+
 FEATURE_COLS = [
     "dow",
     "week_of_year",
     "month",
     "is_december",
-    "is_summer",
     "temp",
     "rainfall",
     "sunrise",
     "cloud_cover",
     "is_holiday",
 ]
+
+RETAIL_COLS = ["rfm_1kg","rfm_200g","rfb_1kg","rfb_200g","rff_1kg","rff_200g","ft_scoop"]
+ROLLING_WEEKS = 8
 
 
 def sb_get(table, params):
@@ -110,11 +112,10 @@ def fetch_retail_sales():
     })
     df = pd.DataFrame(rows)
     if df.empty:
-        return pd.DataFrame(columns=["date","rfm_1kg","rfm_200g","rfb_1kg",
-                                      "rfb_200g","rff_1kg","rff_200g","ft_scoop"])
+        return pd.DataFrame(columns=["date"] + RETAIL_COLS)
     df = df.rename(columns={"week": "date"})
     df["date"] = pd.to_datetime(df["date"])
-    for c in ["rfm_1kg","rfm_200g","rfb_1kg","rfb_200g","rff_1kg","rff_200g","ft_scoop"]:
+    for c in RETAIL_COLS:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     return df
 
@@ -134,27 +135,17 @@ def fetch_weather():
     return df
 
 
-def detect_saturday_trading(bar_sales):
-    sat     = bar_sales[bar_sales["date"].dt.dayofweek == 5]
-    has_sat = (sat["rfm"] > 0).any() if not sat.empty else False
-    print(f"  Saturday trading detected: {has_sat}", flush=True)
-    return has_sat
-
-
 def add_features(df):
-    """Add all model features to a dataframe that has a 'date' column."""
     df = df.copy()
     df["dow"]          = df["date"].dt.dayofweek
     df["week_of_year"] = df["date"].dt.isocalendar().week.astype(int)
     df["month"]        = df["date"].dt.month
     df["is_december"]  = (df["date"].dt.month == 12).astype(int)
-    df["is_summer"]    = (df["date"].dt.month.isin([7, 8])).astype(int)
     df["is_holiday"]   = df["date"].isin(BANK_HOLIDAYS).astype(int)
     return df
 
 
 def to_daily(df, weather_df):
-    """Merge daily sales data with weather and add model features."""
     daily = df.copy()
     daily = daily.merge(weather_df, on="date", how="left")
     for c in ["temp","rainfall","cloud_cover","sunrise"]:
@@ -165,7 +156,6 @@ def to_daily(df, weather_df):
 
 
 def build_future(weather_df, last_index, last_date, n_days=90, include_saturday=False):
-    """Build future feature rows for forecasting."""
     future_dates = []
     d = last_date + timedelta(days=1)
     max_dow = 5 if include_saturday else 4
@@ -183,8 +173,8 @@ def build_future(weather_df, last_index, last_date, n_days=90, include_saturday=
     return future
 
 
-def train_and_forecast(daily, future, target_col):
-    # Exclude bank holiday days from training
+def train_and_forecast_bar(daily, future, target_col):
+    """Random Forest model for bar coffee."""
     training = daily[
         (daily[target_col].notna()) &
         (daily["is_holiday"] == 0)
@@ -227,6 +217,48 @@ def train_and_forecast(daily, future, target_col):
     return future[["date","forecast"]].set_index("date")["forecast"]
 
 
+def forecast_retail_rolling(retail_df, future_dates, include_saturday=False):
+    """
+    Rolling 8-week day-of-week average for retail.
+    For each future date, returns the average sales for that day of week
+    over the last ROLLING_WEEKS weeks, excluding bank holidays.
+    """
+    if retail_df.empty or len(retail_df) < 7:
+        print(f"  Retail: insufficient data, using zeros", flush=True)
+        result = {}
+        for col in RETAIL_COLS:
+            result[col] = pd.Series(0.0, index=future_dates)
+        return result
+
+    # Use most recent ROLLING_WEEKS weeks only
+    cutoff = retail_df["date"].max() - timedelta(weeks=ROLLING_WEEKS)
+    recent = retail_df[
+        (retail_df["date"] >= cutoff) &
+        (~retail_df["date"].isin(BANK_HOLIDAYS))
+    ].copy()
+    recent["dow"] = recent["date"].dt.dayofweek
+
+    result = {}
+    for col in RETAIL_COLS:
+        dow_avg = recent.groupby("dow")[col].mean()
+        forecasts = []
+        for d in future_dates:
+            dow = d.dayofweek
+            if d in BANK_HOLIDAYS:
+                forecasts.append(0.0)
+            else:
+                avg = dow_avg.get(dow, 0.0)
+                forecasts.append(round(float(avg), 2))
+        result[col] = pd.Series(forecasts, index=future_dates)
+
+    # Print summary
+    for col in RETAIL_COLS:
+        avg = result[col].mean()
+        print(f"  {col}: {ROLLING_WEEKS}wk rolling avg={avg:.2f}/day", flush=True)
+
+    return result
+
+
 def main():
     print(f"=== Forecast job={JOB_ID} shop={SHOP_ID} started {datetime.utcnow().isoformat()} ===", flush=True)
     update_job("running")
@@ -238,11 +270,10 @@ def main():
         weather      = fetch_weather()
         print(f"  Bar: {len(bar_sales)} days | Retail: {len(retail_sales)} days | Weather: {len(weather)} days", flush=True)
 
-        SATURDAY_SHOPS = {"QVS", "LUC"}
         include_saturday = SHOP_ID in SATURDAY_SHOPS
         print(f"  Saturday trading: {include_saturday}", flush=True)
 
-        # ── Bar models ────────────────────────────────────────
+        # ── Bar models (Random Forest) ────────────────────────
         print("\n-- Bar models --", flush=True)
         bar_daily  = to_daily(bar_sales, weather)
         bar_future = build_future(
@@ -254,41 +285,18 @@ def main():
 
         bar_results = {}
         for ct in ["rfm","rfb","rff","rfd"]:
-            bar_results[ct] = train_and_forecast(bar_daily, bar_future, ct)
+            bar_results[ct] = train_and_forecast_bar(bar_daily, bar_future, ct)
 
-        # ── Retail models ─────────────────────────────────────
-        retail_results = {}
-        has_retail = not retail_sales.empty and len(retail_sales) >= 5
-
-        if has_retail:
-            print("\n-- Retail models --", flush=True)
-            rs = retail_sales.copy()
-            rs["rfm_total"] = rs["rfm_1kg"] + rs["rfm_200g"]
-            rs["rfb_total"] = rs["rfb_1kg"] + rs["rfb_200g"]
-            rs["rff_total"] = rs["rff_1kg"] + rs["rff_200g"]
-            rs["fts_total"] = rs["ft_scoop"]
-
-            total_cols = ["rfm_total","rfb_total","rff_total","fts_total"]
-            ret_daily  = to_daily(rs, weather)
-            ret_future = build_future(
-                weather,
-                ret_daily["day_index"].max(),
-                ret_daily["date"].max(),
-                include_saturday=include_saturday
-            )
-
-            for ct in total_cols:
-                retail_results[ct] = train_and_forecast(ret_daily, ret_future, ct)
-
-            def size_ratio(a, b):
-                total = retail_sales[a].sum() + retail_sales[b].sum()
-                return retail_sales[a].sum() / total if total > 0 else 0.5
-
-            rfm_r = size_ratio("rfm_1kg", "rfm_200g")
-            rfb_r = size_ratio("rfb_1kg", "rfb_200g")
-            rff_r = size_ratio("rff_1kg", "rff_200g")
-        else:
-            print("\n-- Retail: not enough data, skipping --", flush=True)
+        # ── Retail models (Rolling average) ──────────────────
+        print("\n-- Retail models (rolling 8-week DOW average) --", flush=True)
+        future_dates   = bar_future["date"].values
+        future_dates   = pd.to_datetime(future_dates)
+        has_retail     = not retail_sales.empty and len(retail_sales) >= 7
+        retail_results = forecast_retail_rolling(
+            retail_sales if has_retail else pd.DataFrame(columns=["date"] + RETAIL_COLS),
+            future_dates,
+            include_saturday=include_saturday
+        )
 
         # ── Combine into one row per date ─────────────────────
         all_dates = bar_results["rfm"].index
@@ -301,28 +309,15 @@ def main():
                 "rfb":        float(bar_results["rfb"].get(d, 0)),
                 "rff":        float(bar_results["rff"].get(d, 0)),
                 "rfd":        float(bar_results["rfd"].get(d, 0)),
+                "rfm_1kg":    float(retail_results["rfm_1kg"].get(d, 0)),
+                "rfm_200g":   float(retail_results["rfm_200g"].get(d, 0)),
+                "rfb_1kg":    float(retail_results["rfb_1kg"].get(d, 0)),
+                "rfb_200g":   float(retail_results["rfb_200g"].get(d, 0)),
+                "rff_1kg":    float(retail_results["rff_1kg"].get(d, 0)),
+                "rff_200g":   float(retail_results["rff_200g"].get(d, 0)),
+                "ft_scoop":   float(retail_results["ft_scoop"].get(d, 0)),
                 "updated_at": datetime.utcnow().isoformat(),
             }
-            if has_retail:
-                rfm = float(retail_results["rfm_total"].get(d, 0))
-                rfb = float(retail_results["rfb_total"].get(d, 0))
-                rff = float(retail_results["rff_total"].get(d, 0))
-                fts = float(retail_results["fts_total"].get(d, 0))
-                rec["rfm_1kg"]  = round(rfm * rfm_r,       2)
-                rec["rfm_200g"] = round(rfm * (1 - rfm_r), 2)
-                rec["rfb_1kg"]  = round(rfb * rfb_r,       2)
-                rec["rfb_200g"] = round(rfb * (1 - rfb_r), 2)
-                rec["rff_1kg"]  = round(rff * rff_r,       2)
-                rec["rff_200g"] = round(rff * (1 - rff_r), 2)
-                rec["ft_scoop"] = round(fts,               2)
-            else:
-                rec["rfm_1kg"]  = None
-                rec["rfm_200g"] = None
-                rec["rfb_1kg"]  = None
-                rec["rfb_200g"] = None
-                rec["rff_1kg"]  = None
-                rec["rff_200g"] = None
-                rec["ft_scoop"] = None
             records.append(rec)
 
         print(f"\nUpserting {len(records)} combined forecast rows...", flush=True)
