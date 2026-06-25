@@ -33,7 +33,7 @@ BANK_HOLIDAYS = pd.to_datetime([
     "2027-08-30","2027-12-27","2027-12-28",
 ])
 
-SATURDAY_SHOPS = {"QVS", "LUC"}
+SATURDAY_SHOPS = {"QVS", "LUC","LSS"}
 
 FEATURE_COLS = [
     "dow",
