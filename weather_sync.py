@@ -139,7 +139,6 @@ def fetch_forecast(start_date: str, end_date: str) -> dict:
             "timezone":           "Europe/London",
             "start_date":         start_date,
             "end_date":           end_date,
-            "forecast_days":      16,
         },
         timeout=30
     )
