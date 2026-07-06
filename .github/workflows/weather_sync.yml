@@ -2,10 +2,8 @@ name: Weather Sync
 
 on:
   schedule:
-    # Every Monday at 05:00 UTC (before staff arrive)
     - cron: '0 5 * * 1'
   workflow_dispatch:
-    # Also allow manual trigger from GitHub Actions tab
 
 jobs:
   sync-weather:
@@ -25,8 +23,8 @@ jobs:
 
       - name: Run weather sync
         env:
-          VISUAL_CROSSING_KEY:  ${{ secrets.VISUAL_CROSSING_KEY }}
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          WEATHER_LOCATION:     ${{ secrets.WEATHER_LOCATION }}
+          WEATHER_LAT:          ${{ secrets.WEATHER_LAT }}
+          WEATHER_LON:          ${{ secrets.WEATHER_LON }}
         run: python weather_sync.py
