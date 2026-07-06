@@ -59,7 +59,6 @@ def fetch_weather(start_date: str, end_date: str) -> list:
         "start_date":         start_date,
         "end_date":           end_date,
         "models":             "gfs_seamless",
-        "forecast_days":      35,
     }
 
     resp = requests.get(url, params=params, timeout=30)
