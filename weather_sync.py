@@ -259,7 +259,7 @@ def main():
     fc_start   = today.strftime("%Y-%m-%d")
     fc_end     = (today + timedelta(days=15)).strftime("%Y-%m-%d")
     ens_start  = (today + timedelta(days=16)).strftime("%Y-%m-%d")
-    ens_end    = (today + timedelta(days=28)).strftime("%Y-%m-%d")
+    ens_end    = (today + timedelta(days=35)).strftime("%Y-%m-%d")
 
     print(f"=== Weather sync started {datetime.utcnow().isoformat()} ===", flush=True)
     print(f"  Location: {LAT}, {LON}", flush=True)
