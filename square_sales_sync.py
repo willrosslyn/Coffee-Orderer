@@ -58,6 +58,7 @@ LOCATION_MAP = {
     "Ludgate Circus":           "LUC",
     "Fenchurch Street":         "FSS",
     "Liverpool Street Station": "LSS",
+    "Cheapside": "CHE",
 }
 
 # ── Drink name -> bar coffee column ───────────────────────────────────────────
