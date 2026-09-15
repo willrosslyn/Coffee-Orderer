@@ -51,6 +51,7 @@ FEATURE_COLS = [
 RETAIL_COLS = ["rfm_1kg","rfm_200g","rfb_1kg","rfb_200g","rff_1kg","rff_200g","ft_scoop"]
 ROLLING_WEEKS = 8   # retail: day-of-week average window
 LEVEL_WEEKS   = 4   # bar: trailing window for the rolling level
+HORIZON_DAYS  = 35  # calendar days ahead of today; matches the weather sync's forecast range
 
 
 def sb_get(table, params):
@@ -156,14 +157,17 @@ def to_daily(df, weather_df):
     return daily
 
 
-def build_future(weather_df, last_date, n_days=90, include_saturday=False):
+def build_future(weather_df, last_date, end_date, include_saturday=False):
+    """Trading days from the day after the last sales row through end_date inclusive."""
     future_dates = []
     d = last_date + timedelta(days=1)
     max_dow = 5 if include_saturday else 4
-    while len(future_dates) < n_days:
+    while d <= end_date:
         if d.weekday() <= max_dow:
             future_dates.append(d)
         d += timedelta(days=1)
+    if not future_dates:
+        raise Exception(f"No future trading days between {last_date.date()} and {end_date.date()}")
 
     future = pd.DataFrame({"date": pd.to_datetime(future_dates)})
     future = future.merge(weather_df, on="date", how="left")
@@ -285,12 +289,16 @@ def main():
 
         # ── Bar models (Random Forest) ────────────────────────
         print("\n-- Bar models --", flush=True)
-        bar_daily  = to_daily(bar_sales, weather)
-        bar_future = build_future(
+        bar_daily   = to_daily(bar_sales, weather)
+        horizon_end = pd.Timestamp(datetime.utcnow().date()) + timedelta(days=HORIZON_DAYS)
+        bar_future  = build_future(
             weather,
             bar_daily["date"].max(),
+            horizon_end,
             include_saturday=include_saturday
         )
+        print(f"  Horizon: {len(bar_future)} trading days, "
+              f"{bar_future['date'].min().date()} to {bar_future['date'].max().date()}", flush=True)
 
         bar_results = {}
         for ct in ["rfm","rfb","rff","rfd"]:
