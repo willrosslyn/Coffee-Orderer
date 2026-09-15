@@ -1,12 +1,11 @@
 """
 Coffee Ordering System - Multi-shop RF Forecast Model
-Bar: Random Forest with weather/seasonal features
+Bar: Random Forest on deviations from a rolling 4-week level, with weather/seasonal features
 Retail: Rolling 8-week day-of-week average (simpler, more reliable for sparse data)
 """
 
 import os, sys, requests
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
 from sklearn.ensemble import RandomForestRegressor
 
@@ -14,6 +13,7 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 SHOP_ID      = os.environ["SHOP_ID"]
 JOB_ID       = os.environ.get("JOB_ID", "manual")
+HAS_SATURDAY = os.environ.get("HAS_SATURDAY", "false").strip().lower() == "true"
 
 HEADERS = {
     "apikey":        SUPABASE_KEY,
@@ -29,11 +29,12 @@ BANK_HOLIDAYS = pd.to_datetime([
     "2026-01-01","2026-04-03","2026-04-06","2026-05-04","2026-05-25",
     "2026-08-31","2026-12-25","2026-12-28",
     # 2027
-    "2027-01-01","2027-04-02","2027-04-05","2027-05-03","2027-05-31",
+    "2027-01-01","2027-03-26","2027-03-29","2027-05-03","2027-05-31",
     "2027-08-30","2027-12-27","2027-12-28",
+    # 2028
+    "2028-01-03","2028-04-14","2028-04-17","2028-05-01","2028-05-29",
+    "2028-08-28","2028-12-25","2028-12-26",
 ])
-
-SATURDAY_SHOPS = {"QVS", "LUC","LSS"}
 
 FEATURE_COLS = [
     "dow",
@@ -48,7 +49,8 @@ FEATURE_COLS = [
 ]
 
 RETAIL_COLS = ["rfm_1kg","rfm_200g","rfb_1kg","rfb_200g","rff_1kg","rff_200g","ft_scoop"]
-ROLLING_WEEKS = 8
+ROLLING_WEEKS = 8   # retail: day-of-week average window
+LEVEL_WEEKS   = 4   # bar: trailing window for the rolling level
 
 
 def sb_get(table, params):
@@ -151,11 +153,10 @@ def to_daily(df, weather_df):
     for c in ["temp","rainfall","cloud_cover","sunrise"]:
         daily[c] = daily[c].ffill().fillna(weather_df[c].median())
     daily = add_features(daily)
-    daily["day_index"] = range(len(daily))
     return daily
 
 
-def build_future(weather_df, last_index, last_date, n_days=90, include_saturday=False):
+def build_future(weather_df, last_date, n_days=90, include_saturday=False):
     future_dates = []
     d = last_date + timedelta(days=1)
     max_dow = 5 if include_saturday else 4
@@ -169,48 +170,56 @@ def build_future(weather_df, last_index, last_date, n_days=90, include_saturday=
     for c in ["temp","rainfall","cloud_cover","sunrise"]:
         future[c] = future[c].ffill().fillna(weather_df[c].median())
     future = add_features(future)
-    future["day_index"] = range(last_index + 1, last_index + 1 + len(future))
     return future
 
 
-def train_and_forecast_bar(daily, future, target_col):
-    """Random Forest model for bar coffee."""
+def rolling_level(daily, target_col, window, min_periods):
+    """
+    Trailing mean of the last `window` trading days, bank holidays excluded.
+    Window is a whole number of trading weeks so it stays day-of-week balanced.
+    """
+    s = daily[target_col].where(daily["is_holiday"] == 0)
+    return s.rolling(window, min_periods=min_periods).mean()
+
+
+def train_and_forecast_bar(daily, future, target_col, trading_days_per_week):
+    """
+    Random Forest model for bar coffee.
+    The rolling level carries the trend; the RF learns day-of-week / weather /
+    seasonal deviations from that level. Future rows are held at the current
+    level, so the forecast can't run away the way an extrapolated trend can.
+    """
+    window = LEVEL_WEEKS * trading_days_per_week
+    level  = rolling_level(daily, target_col, window, min_periods=trading_days_per_week)
+
+    daily = daily.copy()
+    daily["level"] = level.shift(1)   # level known at the start of each day
     training = daily[
         (daily[target_col].notna()) &
+        (daily["level"].notna()) &
         (daily["is_holiday"] == 0)
     ].copy()
+    if training.empty:
+        raise Exception(f"{target_col}: not enough history to build a level "
+                        f"(need > {trading_days_per_week} trading days)")
+    training["residual"] = training[target_col] - training["level"]
 
     print(f"  {target_col}: {len(training)} training rows (excl. bank holidays)", end="", flush=True)
 
-    t = training["day_index"].values
-    y = training[target_col].values
-    coef     = np.polyfit(t, y, deg=2)
-    trend_fn = np.poly1d(coef)
-
-    training["trend"]    = trend_fn(t)
-    training["residual"] = y - training["trend"]
-
+    features = FEATURE_COLS + ["level"]
     model = RandomForestRegressor(
         n_estimators=500, max_depth=10, min_samples_leaf=5,
         random_state=42, oob_score=True, bootstrap=True
     )
-    model.fit(training[FEATURE_COLS], training["residual"])
+    model.fit(training[features], training["residual"])
 
-    fitted           = training["trend"] + model.predict(training[FEATURE_COLS])
-    recent           = training.tail(20).copy()
-    recent["fitted"] = fitted[-20:]
-    ratio            = recent[target_col] / recent["fitted"].replace(0, np.nan)
-    uplift           = ratio.median()
-    if np.isnan(uplift) or uplift <= 0:
-        uplift = 1.0
-
+    current_level = level.iloc[-1]
     oob = getattr(model, "oob_score_", None)
-    print(f", uplift={uplift:.3f}" + (f", OOB R2={oob:.3f}" if oob else ""), flush=True)
+    print(f", level={current_level:.1f}/day" + (f", OOB R2={oob:.3f}" if oob else ""), flush=True)
 
     future = future.copy()
-    future["trend"]    = trend_fn(future["day_index"].values)
-    future["residual"] = model.predict(future[FEATURE_COLS])
-    future["forecast"] = (future["trend"] + future["residual"]) * uplift
+    future["level"]    = current_level
+    future["forecast"] = current_level + model.predict(future[features])
     future["forecast"] = future["forecast"].clip(lower=0).round(2)
     future.loc[future["is_holiday"] == 1, "forecast"] = 0
 
@@ -270,7 +279,8 @@ def main():
         weather      = fetch_weather()
         print(f"  Bar: {len(bar_sales)} days | Retail: {len(retail_sales)} days | Weather: {len(weather)} days", flush=True)
 
-        include_saturday = SHOP_ID in SATURDAY_SHOPS
+        include_saturday = HAS_SATURDAY
+        trading_days_per_week = 6 if include_saturday else 5
         print(f"  Saturday trading: {include_saturday}", flush=True)
 
         # ── Bar models (Random Forest) ────────────────────────
@@ -278,14 +288,13 @@ def main():
         bar_daily  = to_daily(bar_sales, weather)
         bar_future = build_future(
             weather,
-            bar_daily["day_index"].max(),
             bar_daily["date"].max(),
             include_saturday=include_saturday
         )
 
         bar_results = {}
         for ct in ["rfm","rfb","rff","rfd"]:
-            bar_results[ct] = train_and_forecast_bar(bar_daily, bar_future, ct)
+            bar_results[ct] = train_and_forecast_bar(bar_daily, bar_future, ct, trading_days_per_week)
 
         # ── Retail models (Rolling average) ──────────────────
         print("\n-- Retail models (rolling 8-week DOW average) --", flush=True)

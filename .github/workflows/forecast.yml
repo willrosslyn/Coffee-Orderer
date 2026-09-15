@@ -6,9 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       shop_id:
-        description: 'Shop ID (e.g. shop_01)'
+        description: 'Shop ID (e.g. LDW, QVS, CHE)'
         required: true
-        default: 'shop_01'
+      has_saturday:
+        description: 'Shop trades on Saturdays'
+        type: boolean
+        default: false
       job_id:
         description: 'Job ID (optional)'
         required: false
@@ -38,7 +41,7 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           SHOP_ID:              ${{ github.event.client_payload.shop_id || inputs.shop_id }}
           JOB_ID:               ${{ github.event.client_payload.job_id  || inputs.job_id  }}
-          HAS_SATURDAY:         ${{ github.event.client_payload.has_saturday || 'false' }}
+          HAS_SATURDAY:         ${{ github.event.client_payload.has_saturday || inputs.has_saturday || 'false' }}
         run: python forecast_model.py
 
       - name: Mark job failed on error

@@ -63,41 +63,44 @@ LOCATION_MAP = {
 
 # ── Drink name -> bar coffee column ───────────────────────────────────────────
 # Matched on item name (case-insensitive). Variation name is ignored.
+# Keep this identical in square_sales_sync.py and square_historical_sync.py.
 DRINK_TO_BAR = {
-    # RFB
-    "americano":        "rfb",
-    "£1 americano":     "rfb",
-    "iced filter":      "rff",
-    "iced americano":   "rfb",
-    # RFF
-    "batch brew":       "rff",
-    "£1 batch brew":    "rff",
-    # RFM
-    "cappuccino":       "rfm",
-    "£1 cappuccino":    "rfm",
-    "cortado":          "rfm",
-    "£1 cortado":       "rfm",
-    "flat white":       "rfm",
-    "£1 flat white":    "rfm",
-    "*flat white":      "rfm",
-    "iced flat white":  "rfm",
-    "£1 iced flat white": "rfm",
-    "iced latte":       "rfm",
-    "£1 iced latte":    "rfm",
-    "iced mocha":       "rfm",
-    "£1 iced mocha":    "rfm",
-    "latte":            "rfm",
-    "£1 latte":         "rfm",
-    "*latte":           "rfm",
-    "macchiato":        "rfm",
-    "£1 macchiato":     "rfm",
-    "mocha":            "rfm",
-    "£1 mocha":         "rfm",
-    "piccolo":          "rfm",
-    "£1 piccolo":       "rfm",
-    "flat white (take away)": "rfm",
+    # RFB (Roasted for Black)
+    "espresso":               "rfb",
+    "long black":             "rfb",
+    "americano":              "rfb",
+    "£1 americano":           "rfb",
+    "iced americano":         "rfb",
+    # RFF (Roasted for Filter)
+    "batch brew":             "rff",
+    "£1 batch brew":          "rff",
+    "iced filter":            "rff",
+    # RFM (Roasted for Milk)
+    "cappuccino":             "rfm",
+    "£1 cappuccino":          "rfm",
     "cappuccino (take away)": "rfm",
+    "cortado":                "rfm",
+    "£1 cortado":             "rfm",
+    "flat white":             "rfm",
+    "£1 flat white":          "rfm",
+    "*flat white":            "rfm",
+    "flat white (take away)": "rfm",
+    "iced flat white":        "rfm",
+    "£1 iced flat white":     "rfm",
+    "iced latte":             "rfm",
+    "£1 iced latte":          "rfm",
+    "iced mocha":             "rfm",
+    "£1 iced mocha":          "rfm",
+    "latte":                  "rfm",
+    "£1 latte":               "rfm",
+    "*latte":                 "rfm",
     "latte (take away)":      "rfm",
+    "macchiato":              "rfm",
+    "£1 macchiato":           "rfm",
+    "mocha":                  "rfm",
+    "£1 mocha":               "rfm",
+    "piccolo":                "rfm",
+    "£1 piccolo":             "rfm",
 }
 
 # ── Retail SKU mappings ───────────────────────────────────────────────────────
@@ -188,8 +191,9 @@ def get_bar_daily_sales(orders: list) -> dict:
                 # Track unmatched names so we can spot gaps
                 unmatched.add(item.get("name", "").strip())
 
-    if unmatched and DRY_RUN:
-        # Only show non-retail unmatched items
+    if unmatched:
+        # Always log so a renamed/new drink in Square is visible, not silently dropped.
+        # Only show non-retail unmatched items.
         retail_names = {k.lower() for k in RETAIL_SKUS.keys()}
         unknown = {n for n in unmatched
                    if n.lower() not in retail_names
