@@ -36,6 +36,17 @@ BANK_HOLIDAYS = pd.to_datetime([
     "2028-08-28","2028-12-25","2028-12-26",
 ])
 
+# Every shop shuts from 24 December to 4 January inclusive, the same rule as
+# Lynda's isShopClosedDate, so those days forecast as zero like a bank holiday.
+# Without this they forecast as normal trading days, which inflated orders placed
+# from the end of November.
+CHRISTMAS_CLOSURES = pd.DatetimeIndex([])
+for _year in range(2025, 2029):
+    CHRISTMAS_CLOSURES = CHRISTMAS_CLOSURES.union(
+        pd.date_range(f"{_year}-12-24", f"{_year + 1}-01-04")
+    )
+BANK_HOLIDAYS = BANK_HOLIDAYS.union(CHRISTMAS_CLOSURES)
+
 FEATURE_COLS = [
     "dow",
     "week_of_year",
